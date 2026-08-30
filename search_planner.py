@@ -5,6 +5,8 @@ The scalable solver uses a route-generation/set-packing decomposition:
 1. Generate many valid elementary paths using compact sweep templates and
    adaptive endpoint beam search.
 2. Use CP-SAT to choose exactly k mutually disjoint paths with maximum reward.
+3. Add nearby translations of the selected paths and re-solve, closing packing
+   gaps caused by pruning routes that were weaker in isolation.
 
 An independent time-indexed CP-SAT model is included for small-instance
 optimality checks.
@@ -299,6 +301,91 @@ def _candidate_greedy(candidates: Sequence[Candidate], drones: int) -> list[int]
     return selected
 
 
+def _translated_candidates(
+    probability: np.ndarray,
+    selected_paths: Sequence[Sequence[int]],
+    radius: int,
+) -> list[Candidate]:
+    """Generate nearby translations of incumbent paths for master refinement.
+
+    Initial route generation intentionally keeps only a small number of strong
+    anchors per template.  That is efficient for one route, but coordinated
+    packing can need a slightly lower-scoring translation that fits tightly
+    beside another route.  Enriching around the incumbent supplies those
+    columns without enumerating every translation of every template.
+    """
+
+    rows, cols = probability.shape
+    flat = probability.ravel()
+    translated: dict[tuple[int, ...], Candidate] = {}
+    for path in selected_paths:
+        coords = np.array([divmod(int(node), cols) for node in path], dtype=int)
+        for row_shift in range(-radius, radius + 1):
+            for col_shift in range(-radius, radius + 1):
+                if row_shift == 0 and col_shift == 0:
+                    continue
+                shifted = coords + np.array([row_shift, col_shift])
+                if (
+                    shifted[:, 0].min() < 0
+                    or shifted[:, 0].max() >= rows
+                    or shifted[:, 1].min() < 0
+                    or shifted[:, 1].max() >= cols
+                ):
+                    continue
+                route = tuple((shifted[:, 0] * cols + shifted[:, 1]).astype(int).tolist())
+                key = _canonical(route)
+                translated[key] = Candidate(
+                    path=route,
+                    score=float(flat[list(route)].sum()),
+                    source="translation refinement",
+                )
+    return list(translated.values())
+
+
+def _solve_candidate_master(
+    candidates: Sequence[Candidate],
+    cell_count: int,
+    drones: int,
+    time_limit: float,
+    random_seed: int,
+) -> tuple[list[int], str, float]:
+    """Solve one set-packing master and return indices, status, and bound."""
+
+    if drones == 1:
+        return [0], "OPTIMAL", candidates[0].score
+
+    model = cp_model.CpModel()
+    choose = [model.new_bool_var(f"route_{index}") for index in range(len(candidates))]
+    by_cell: list[list[int]] = [[] for _ in range(cell_count)]
+    for index, candidate in enumerate(candidates):
+        for node in candidate.path:
+            by_cell[node].append(index)
+    model.add(sum(choose) == drones)
+    for covering in by_cell:
+        if len(covering) > 1:
+            model.add(sum(choose[index] for index in covering) <= 1)
+    scale = 10**12
+    rewards = [int(round(candidate.score * scale)) for candidate in candidates]
+    model.maximize(sum(reward * variable for reward, variable in zip(rewards, choose)))
+    greedy_hint = set(_candidate_greedy(candidates, drones))
+    if len(greedy_hint) == drones:
+        for index, variable in enumerate(choose):
+            model.add_hint(variable, int(index in greedy_hint))
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = float(time_limit)
+    solver.parameters.num_search_workers = 8
+    solver.parameters.random_seed = int(random_seed)
+    status_code = solver.solve(model)
+    raw_status = solver.status_name(status_code)
+    if status_code not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        selected = list(greedy_hint)
+        if len(selected) != drones:
+            raise RuntimeError("candidate library does not contain enough disjoint routes")
+        return selected, f"{raw_status}; greedy fallback", float("nan")
+    selected = [index for index, variable in enumerate(choose) if solver.value(variable)]
+    return selected, raw_status, float(solver.best_objective_bound / scale)
+
+
 def plan_from_candidates(
     probability: np.ndarray,
     candidates: Sequence[Candidate],
@@ -306,54 +393,52 @@ def plan_from_candidates(
     length: int,
     time_limit: float = 12.0,
     random_seed: int = 2026,
+    refinement_rounds: int = 3,
+    translation_radius: int = 3,
 ) -> PlanResult:
-    """Select exactly ``drones`` disjoint routes from the candidate library."""
+    """Select disjoint routes and iteratively enrich around the incumbent.
+
+    ``time_limit`` applies to each candidate-master solve.  The returned bound
+    and status apply only to the final enriched route library, not to all
+    mathematically possible grid paths.
+    """
 
     if drones * length > probability.size:
         raise ValueError("the requested disjoint coverage exceeds the grid")
     started = perf_counter()
-    if drones == 1:
-        selected = [0]
-        status = "OPTIMAL (candidate library)"
-        candidate_bound = candidates[0].score
-    else:
-        model = cp_model.CpModel()
-        choose = [model.new_bool_var(f"route_{index}") for index in range(len(candidates))]
-        by_cell: list[list[int]] = [[] for _ in range(probability.size)]
-        for index, candidate in enumerate(candidates):
-            for node in candidate.path:
-                by_cell[node].append(index)
-        model.add(sum(choose) == drones)
-        for covering in by_cell:
-            if len(covering) > 1:
-                model.add(sum(choose[index] for index in covering) <= 1)
-        scale = 10**12
-        rewards = [int(round(candidate.score * scale)) for candidate in candidates]
-        model.maximize(sum(reward * variable for reward, variable in zip(rewards, choose)))
-        greedy_hint = set(_candidate_greedy(candidates, drones))
-        if len(greedy_hint) == drones:
-            for index, variable in enumerate(choose):
-                model.add_hint(variable, int(index in greedy_hint))
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = float(time_limit)
-        solver.parameters.num_search_workers = 8
-        solver.parameters.random_seed = int(random_seed)
-        status_code = solver.solve(model)
-        status = solver.status_name(status_code)
-        if status_code not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            selected = list(greedy_hint)
-            if len(selected) != drones:
-                raise RuntimeError("candidate library does not contain enough disjoint routes")
-            status = f"{status}; greedy fallback"
-            candidate_bound = float("nan")
-        else:
-            selected = [index for index, variable in enumerate(choose) if solver.value(variable)]
-            candidate_bound = float(solver.best_objective_bound / scale)
-    paths = [list(candidates[index].path) for index in selected]
+    working = list(candidates)
+    known = {_canonical(candidate.path) for candidate in working}
+    selected, raw_status, candidate_bound = _solve_candidate_master(
+        working, probability.size, drones, time_limit, random_seed
+    )
+    for refinement in range(refinement_rounds):
+        incumbent_paths = [working[index].path for index in selected]
+        additions = []
+        for candidate in _translated_candidates(probability, incumbent_paths, translation_radius):
+            key = _canonical(candidate.path)
+            if key not in known:
+                known.add(key)
+                additions.append(candidate)
+        if not additions:
+            break
+        working.extend(additions)
+        working.sort(key=lambda candidate: candidate.score, reverse=True)
+        selected, raw_status, candidate_bound = _solve_candidate_master(
+            working,
+            probability.size,
+            drones,
+            time_limit,
+            random_seed + refinement + 1,
+        )
+    paths = [list(working[index].path) for index in selected]
     validate_paths(paths, probability.shape, length)
     score = path_score(probability, paths)
     global_bound = float(np.sort(probability.ravel())[-drones * length :].sum())
     candidate_gap = max(0.0, candidate_bound - score) / candidate_bound if candidate_bound > 0 else 0.0
+    if raw_status in {"OPTIMAL", "FEASIBLE"}:
+        status = f"{raw_status} (enriched candidate library)"
+    else:
+        status = raw_status
     return PlanResult(
         paths=paths,
         score=score,
@@ -362,7 +447,7 @@ def plan_from_candidates(
         candidate_bound=candidate_bound,
         candidate_gap=candidate_gap,
         global_relaxation_bound=global_bound,
-        candidate_count=len(candidates),
+        candidate_count=len(working),
     )
 
 
@@ -511,4 +596,3 @@ def plot_paths(
         ax.scatter(x[-1], y[-1], s=48, marker="X", color=colors(drone % 10), edgecolor="white", linewidth=0.8, zorder=5)
     ax.legend(loc="upper left", fontsize=8, framealpha=0.9, ncol=2)
     return ax
-

@@ -1,6 +1,7 @@
 import numpy as np
 
 from search_planner import (
+    Candidate,
     generate_candidates,
     make_probability_surface,
     path_score,
@@ -31,4 +32,29 @@ def test_exact_small_is_certified():
     validate_paths(result.paths, probability.shape, expected_length=5)
     assert result.status == "OPTIMAL"
     assert result.candidate_gap < 1e-9
+
+
+def test_translation_refinement_closes_a_packing_gap():
+    probability = np.ones((8, 8), dtype=float)
+    probability[2:5, :4] = np.array([[4.0], [8.0], [4.0]])
+    probability /= probability.sum()
+    flat = probability.ravel()
+    routes = [(8, 9, 10, 11), (40, 41, 42, 43)]
+    candidates = [
+        Candidate(path=route, score=float(flat[list(route)].sum()), source="test")
+        for route in routes
+    ]
+    initial = plan_from_candidates(
+        probability, candidates, drones=2, length=4, refinement_rounds=0
+    )
+    refined = plan_from_candidates(
+        probability,
+        candidates,
+        drones=2,
+        length=4,
+        refinement_rounds=3,
+        translation_radius=1,
+    )
+    validate_paths(refined.paths, probability.shape, expected_length=4)
+    assert refined.score > initial.score
 

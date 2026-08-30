@@ -116,7 +116,7 @@ Those constraints enforce an actual ordered simple path, but the 100 × 100, 8-d
 
 The scalable solver uses two levels:
 
-- **Route generation:** translated and rotated serpentine sweeps cover compact high-mass regions; bidirectional beam search contributes irregular probability-following routes and geographic diversity.
+- **Route generation:** translated and rotated serpentine sweeps cover compact high-mass regions; bidirectional beam search contributes irregular probability-following routes and geographic diversity. After each master solve, nearby translations of the incumbent routes are added and the master is re-solved so a useful route is not discarded merely because it scores slightly worse in isolation.
 - **Team selection:** one Boolean variable per complete route; CP-SAT chooses exactly $k$ routes, with one set-packing constraint per cell to prevent overlap.
 
 This master problem is solved exactly over the generated route library. It is not a proof of global optimality because ungenerated routes remain possible. To report quality honestly, we use three distinct checks: an exact small-case optimum, the CP-SAT bound within the candidate library, and a global relaxation equal to the sum of the largest $kL$ cell probabilities (which ignores contiguity and is therefore optimistic)."""

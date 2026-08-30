@@ -8,7 +8,8 @@ The implementation combines:
 
 - a full time-indexed CP-SAT model that certifies small cases;
 - scalable route generation (compact sweep templates plus endpoint beam search); and
-- a CP-SAT set-packing master problem that selects the best nonoverlapping combination from the route library.
+- a CP-SAT set-packing master problem that selects the best nonoverlapping combination from the route library; and
+- iterative translation enrichment that closes gaps created when coordinated routes need to fit tightly together.
 
 The main deliverables are `optimal_search.ipynb` and its executed export, `optimal_search.html`. The reusable implementation is in `search_planner.py`.
 
