@@ -3,7 +3,7 @@
 <html lang="en">
 <head><meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>optimal_search</title><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.1.10/require.min.js"></script>
+<title>Probability-Weighted Multi-Drone Search on Raster Grids: A Matheuristic with Bayesian Replanning</title><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.1.10/require.min.js"></script>
 <style type="text/css">
     pre { line-height: 125%; }
 td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
@@ -7802,7 +7802,7 @@ a.anchor-link {
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h1 id="From-probability-map-to-coordinated-drone-routes">From probability map to coordinated drone routes<a class="anchor-link" href="#From-probability-map-to-coordinated-drone-routes">¶</a></h1><p><strong>Author:</strong> Andrew Wheeler</p>
+<h1 id="Probability-Weighted-Multi-Drone-Search-on-Raster-Grids:-A-Matheuristic-with-Bayesian-Replanning">Probability-Weighted Multi-Drone Search on Raster Grids: A Matheuristic with Bayesian Replanning<a class="anchor-link" href="#Probability-Weighted-Multi-Drone-Search-on-Raster-Grids:-A-Matheuristic-with-Bayesian-Replanning">¶</a></h1><p><strong>Author:</strong> Andrew Wheeler</p>
 <p><strong>AI-use statement:</strong> This notebook, its mathematical exposition, code, and figures were mostly generated using OpenAI Codex with GPT-5.6 Sol under the author's direction. Andrew Wheeler reviewed the work, requested substantive revisions, and takes responsibility for the final content.</p>
 <h2 id="Abstract">Abstract<a class="anchor-link" href="#Abstract">¶</a></h2><p><strong>Objective.</strong> We study the allocation of multiple search drones over a raster-valued posterior probability surface when each drone has a fixed scan budget and must follow a contiguous path. The objective is to maximize the probability mass searched without duplicate coverage.</p>
 <p><strong>Methods.</strong> The problem is formulated as a free-origin, free-destination grid variant of the Team Orienteering Problem. A time-indexed binary program provides exact solutions and feasibility certificates on small instances. For operational-scale rasters, we develop a path-based matheuristic comprising serpentine sweep generation, bidirectional beam construction, an exact CP-SAT set-packing master, and incumbent-centered translation enrichment. Optional local-topology constraints prevent isolated unsearched cells. A cell-order-statistic relaxation supplies a valid global upper bound. Negative search outcomes are incorporated through sequential Bayesian updating.</p>

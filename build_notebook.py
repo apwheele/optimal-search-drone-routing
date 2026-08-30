@@ -16,7 +16,7 @@ cells = []
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""# From probability map to coordinated drone routes
+        r"""# Probability-Weighted Multi-Drone Search on Raster Grids: A Matheuristic with Bayesian Replanning
 
 **Author:** Andrew Wheeler
 
