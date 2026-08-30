@@ -11,6 +11,11 @@ The implementation combines:
 - a CP-SAT set-packing master problem that selects the best nonoverlapping combination from the route library; and
 - iterative translation enrichment that closes gaps created when coordinated routes need to fit tightly together.
 
+The planner also supports sequential search rounds. After an unsuccessful
+round, `update_probability_after_no_detection` applies a Bayesian update,
+zeros searched cells under perfect detection, renormalizes the remaining
+surface, and allows the next fleet to be optimized against that posterior.
+
 The main deliverables are `optimal_search.ipynb` and its executed export, `optimal_search.html`. The reusable implementation is in `search_planner.py`.
 
 ## Results
@@ -18,6 +23,7 @@ The main deliverables are `optimal_search.ipynb` and its executed export, `optim
 - [View the executed notebook](optimal_search.ipynb)
 - [Download the standalone HTML report](optimal_search.html)
 - [View the scenario results](artifacts/scenario_results.csv)
+- [View the sequential-round results](artifacts/sequential_round_results.csv)
 
 ### Full-scale optimized flight paths
 
@@ -26,6 +32,10 @@ The main deliverables are `optimal_search.ipynb` and its executed export, `optim
 ### Exact small-instance validation
 
 ![Exact, hybrid, and greedy route comparison](artifacts/small_exact_validation.png)
+
+### Replanning after an unsuccessful first round
+
+![Round-1 routes, zeroed posterior cells, and optimized round-2 routes](artifacts/two_round_search.png)
 
 ## Reproduce
 

@@ -44,6 +44,7 @@ from search_planner import (
     plot_paths,
     plot_surface,
     solve_exact_small,
+    update_probability_after_no_detection,
     validate_paths,
 )
 
@@ -267,7 +268,123 @@ plt.show()"""
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""## 6. Interpretation
+        r"""## 6. A second search round after no detection
+
+Suppose four drones complete the 100-cell routes from round 1 but do not find the target. With perfect detection, “target not detected” is impossible in any cell that was successfully searched, so those 400 cells receive posterior probability zero. The remaining probability is renormalized before planning round 2:
+
+$$p_i^{(2)}=\frac{p_i^{(1)}(1-q_i)^{s_i}}{\sum_jp_j^{(1)}(1-q_j)^{s_j}},$$
+
+where $s_i=1$ if cell $i$ was searched and $q_i$ is its probability of detection. Here $q_i=1$, producing literal zero-probability tracks. For an imperfect sensor, the same function accepts $q_i<1$ and merely reduces those probabilities.
+
+This assumes the drones **completed** their searches and failed to detect the target. If a drone itself failed before scanning its assigned cells, those unsearched cells must retain their prior probability."""
+    )
+)
+
+cells.append(
+    nbf.v4.new_code_cell(
+        """round1 = plans[(4, 100)]
+round2_probability = update_probability_after_no_detection(
+    probability, round1.paths, detection_probability=1.0
+)
+round1_cells = set(node for path in round1.paths for node in path)
+
+assert np.isclose(round2_probability.sum(), 1.0)
+assert np.all(round2_probability.ravel()[list(round1_cells)] == 0.0)
+
+round2_candidates = generate_candidates(round2_probability, length=100)
+round2 = plan_from_candidates(
+    round2_probability,
+    round2_candidates,
+    drones=4,
+    length=100,
+    time_limit=12,
+    random_seed=3026,
+)
+validate_paths(round2.paths, round2_probability.shape, expected_length=100)
+round2_cells = set(node for path in round2.paths for node in path)
+repeat_steps = len(round1_cells & round2_cells)
+
+round1_find = round1.score
+round2_find_given_failure = round2.score
+round2_unconditional_increment = (1.0 - round1_find) * round2_find_given_failure
+cumulative_find = round1_find + round2_unconditional_increment
+
+sequential_results = pd.DataFrame(
+    [
+        {
+            "round": 1,
+            "zero_probability_cells_before_round": 0,
+            "conditional_find_probability": round1_find,
+            "unconditional_probability_increment": round1_find,
+            "cumulative_find_probability": round1_find,
+        },
+        {
+            "round": 2,
+            "zero_probability_cells_before_round": len(round1_cells),
+            "conditional_find_probability": round2_find_given_failure,
+            "unconditional_probability_increment": round2_unconditional_increment,
+            "cumulative_find_probability": cumulative_find,
+        },
+    ]
+)
+display(
+    sequential_results.style.format(
+        {
+            "conditional_find_probability": "{:.2%}",
+            "unconditional_probability_increment": "{:.2%}",
+            "cumulative_find_probability": "{:.2%}",
+        }
+    )
+)
+print(f"Round-1 cells assigned zero posterior probability: {len(round1_cells)}")
+print(f"Round-2 steps through zero-probability round-1 cells: {repeat_steps}")
+sequential_results.to_csv(OUTPUT / "sequential_round_results.csv", index=False)"""
+    )
+)
+
+cells.append(
+    nbf.v4.new_code_cell(
+        """round1_coords = np.array([divmod(node, probability.shape[1]) for node in sorted(round1_cells)])
+old_x = round1_coords[:, 1] * 10 / (probability.shape[1] - 1)
+old_y = round1_coords[:, 0] * 10 / (probability.shape[0] - 1)
+
+fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.2), constrained_layout=True)
+plot_paths(
+    probability,
+    round1.paths,
+    axes[0],
+    f"Round 1: search {round1_find:.1%} of prior mass",
+)
+plot_surface(
+    round2_probability,
+    axes[1],
+    "After no detection: 400 cells set to zero",
+)
+axes[1].scatter(old_x, old_y, s=9, marker="s", color="white", alpha=0.85,
+                linewidth=0, label="zero posterior probability")
+axes[1].legend(loc="upper left", fontsize=8, framealpha=0.9)
+plot_paths(
+    round2_probability,
+    round2.paths,
+    axes[2],
+    f"Round 2: search {round2_find_given_failure:.1%} of posterior",
+)
+axes[2].scatter(old_x, old_y, s=7, marker="s", color="lightgray", alpha=0.55,
+                linewidth=0, zorder=1.5)
+fig.savefig(OUTPUT / "two_round_search.png", bbox_inches="tight")
+plt.show()"""
+    )
+)
+
+cells.append(
+    nbf.v4.new_markdown_cell(
+        r"""The second-round optimizer uses exactly the same code as the first. Zero-valued cells are legal transit cells but contribute nothing to the objective. In this example the reported overlap count shows whether any such transit was useful. Conditional and cumulative probabilities are kept separate: round 2's objective is conditional on the round-1 failure, while its unconditional contribution is multiplied by the probability of reaching round 2."""
+    )
+)
+
+cells.append(
+    nbf.v4.new_markdown_cell(
+        r"""## 7. Interpretation
 
 The routes make the allocation trade-off explicit. A single drone concentrates on one high-value connected region because reaching another mode would spend budget on lower-probability bridge cells. With more drones, free deployment allows separate modes to be searched without paying that bridge cost. Longer routes widen each local sweep and eventually make secondary modes worthwhile. This is the behavior the original greedy experiment was trying to elicit, but here all drones are coordinated in one master optimization.
 
@@ -279,7 +396,7 @@ There is no universal polynomial-time “best” solver for arbitrary maps becau
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""## 7. Reuse and extensions
+        r"""## 8. Reuse and extensions
 
 The functions in `search_planner.py` accept any nonnegative 2-D array after normalization. The clean extension points are:
 

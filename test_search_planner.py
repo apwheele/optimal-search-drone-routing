@@ -7,6 +7,7 @@ from search_planner import (
     path_score,
     plan_from_candidates,
     solve_exact_small,
+    update_probability_after_no_detection,
     validate_paths,
 )
 
@@ -58,3 +59,13 @@ def test_translation_refinement_closes_a_packing_gap():
     validate_paths(refined.paths, probability.shape, expected_length=4)
     assert refined.score > initial.score
 
+
+def test_negative_search_update_zeros_and_renormalizes():
+    prior = np.full((2, 2), 0.25)
+    posterior = update_probability_after_no_detection(prior, [[0]], detection_probability=1.0)
+    assert posterior[0, 0] == 0.0
+    assert np.allclose(posterior.ravel()[1:], 1 / 3)
+    assert np.isclose(posterior.sum(), 1.0)
+
+    imperfect = update_probability_after_no_detection(prior, [[0]], detection_probability=0.5)
+    assert np.allclose(imperfect.ravel(), [1 / 7, 2 / 7, 2 / 7, 2 / 7])

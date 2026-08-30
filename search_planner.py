@@ -93,6 +93,47 @@ def path_score(probability: np.ndarray, paths: Sequence[Sequence[int]]) -> float
     return float(sum(flat[node] for path in paths for node in path))
 
 
+def update_probability_after_no_detection(
+    probability: np.ndarray,
+    searched_paths: Sequence[Sequence[int]],
+    detection_probability: float | np.ndarray = 1.0,
+) -> np.ndarray:
+    """Bayesian-update a target surface after an unsuccessful search round.
+
+    ``detection_probability`` is the probability of detecting the target when
+    its cell is searched.  It may be a scalar or an array matching the surface.
+    Perfect detection sets searched cells to zero; imperfect detection reduces
+    but does not eliminate them.  The returned posterior always sums to one.
+    """
+
+    prior = np.asarray(probability, dtype=float)
+    if prior.ndim != 2 or np.any(prior < 0) or not np.isfinite(prior).all():
+        raise ValueError("probability must be a finite, nonnegative 2-D array")
+    if prior.sum() <= 0:
+        raise ValueError("probability must contain positive mass")
+    detection = np.asarray(detection_probability, dtype=float)
+    try:
+        detection = np.broadcast_to(detection, prior.shape)
+    except ValueError as error:
+        raise ValueError("detection_probability must be scalar or match the surface") from error
+    if np.any((detection < 0) | (detection > 1)) or not np.isfinite(detection).all():
+        raise ValueError("detection_probability values must lie between zero and one")
+
+    searched = np.zeros(prior.size, dtype=bool)
+    for path in searched_paths:
+        nodes = np.asarray(path, dtype=int)
+        if np.any((nodes < 0) | (nodes >= prior.size)):
+            raise ValueError("searched_paths contains an out-of-grid cell")
+        searched[nodes] = True
+    likelihood_no_detection = np.ones(prior.size, dtype=float)
+    likelihood_no_detection[searched] = 1.0 - detection.ravel()[searched]
+    posterior = prior.ravel() * likelihood_no_detection
+    normalizer = float(posterior.sum())
+    if normalizer <= 0:
+        raise ValueError("the negative observation eliminates all prior probability mass")
+    return (posterior / normalizer).reshape(prior.shape)
+
+
 def validate_paths(
     paths: Sequence[Sequence[int]], shape: tuple[int, int], expected_length: int | None = None
 ) -> None:
