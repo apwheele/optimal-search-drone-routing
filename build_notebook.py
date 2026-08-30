@@ -18,6 +18,10 @@ cells.append(
     nbf.v4.new_markdown_cell(
         r"""# From probability map to coordinated drone routes
 
+**Author:** Andrew Wheeler
+
+**AI-use statement:** This notebook, its mathematical exposition, code, and figures were mostly generated using OpenAI Codex with GPT-5.6 Sol under the author's direction. Andrew Wheeler reviewed the work, requested substantive revisions, and takes responsibility for the final content.
+
 ## Abstract
 
 **Objective.** We study the allocation of multiple search drones over a raster-valued posterior probability surface when each drone has a fixed scan budget and must follow a contiguous path. The objective is to maximize the probability mass searched without duplicate coverage.
@@ -108,16 +112,19 @@ $$p_i\geq 0, \qquad \sum_{i\in V}p_i=1.$$
 
 A route for drone $d$ is an injective map $r_d:T\rightarrow V$ such that $(r_d(t-1),r_d(t))\in A$ for every $t=2,\ldots,L$. Thus, a route is an ordered elementary path, not merely a connected subset of cells. The team plan is $R=(r_1,\ldots,r_k)$, subject to vertex disjointness across drones. Write
 
-| Symbol | Definition |
-|:--|:--|
-| $G=(V,A)$ | Directed queen-adjacency grid graph |
-| $n=|V|$ | Number of raster cells |
-| $D=\{1,\ldots,k\}$ | Drone index set |
-| $T=\{1,\ldots,L\}$ | Ordered scan positions per drone |
-| $p_i$ | Posterior probability that the target occupies cell $i$ |
-| $r_d(t)$ | Cell visited by drone $d$ at route position $t$ |
-| $S(R)$ | Union of cells searched by team plan $R$ |
-| $F(R;p)$ | Probability mass covered by plan $R$ under surface $p$ |
+<table>
+<thead><tr><th>Symbol</th><th>Definition</th></tr></thead>
+<tbody>
+<tr><td>\(G=(V,A)\)</td><td>Directed queen-adjacency grid graph</td></tr>
+<tr><td>\(n=\lvert V\rvert\)</td><td>Number of raster cells</td></tr>
+<tr><td>\(D=\{1,\ldots,k\}\)</td><td>Drone index set</td></tr>
+<tr><td>\(T=\{1,\ldots,L\}\)</td><td>Ordered scan positions per drone</td></tr>
+<tr><td>\(p_i\)</td><td>Posterior probability that the target occupies cell \(i\)</td></tr>
+<tr><td>\(r_d(t)\)</td><td>Cell visited by drone \(d\) at route position \(t\)</td></tr>
+<tr><td>\(S(R)\)</td><td>Union of cells searched by team plan \(R\)</td></tr>
+<tr><td>\(F(R;p)\)</td><td>Probability mass covered by plan \(R\) under surface \(p\)</td></tr>
+</tbody>
+</table>
 
 $$S(R)=\bigcup_{d\in D}\{r_d(t):t\in T\}$$
 
@@ -279,11 +286,13 @@ The implementation treats validation as part of the algorithm rather than presen
     )
 )
 
-cells.append(
-    nbf.v4.new_markdown_cell(
-        r"""## 4. Computational timing and scaling
+timing_cells = []
 
-### 4.1 Benchmark design
+timing_cells.append(
+    nbf.v4.new_markdown_cell(
+        r"""## 7. Computational timing and scaling
+
+### 7.1 Benchmark design
 
 Wall-clock timing was measured separately for (i) probability-surface construction, (ii) candidate-route generation, and (iii) restricted-master solution plus translation refinement. Their sum is reported as **cold total time**. When several fleet sizes use the same grid and 100-cell route length, candidate generation is performed once and reused; the cold total nevertheless includes that measured generation cost to represent a fresh planning request. **Warm replanning time** is the planning column alone.
 
@@ -293,7 +302,7 @@ Each case was run once with `time.perf_counter`; these are engineering measureme
     )
 )
 
-cells.append(
+timing_cells.append(
     nbf.v4.new_code_cell(
         """import json
 
@@ -346,7 +355,7 @@ display(
     )
 )
 
-cells.append(
+timing_cells.append(
     nbf.v4.new_code_cell(
         """fig, axes = plt.subplots(1, 2, figsize=(13, 4.7), constrained_layout=True)
 
@@ -376,9 +385,9 @@ plt.show()"""
     )
 )
 
-cells.append(
+timing_cells.append(
     nbf.v4.new_markdown_cell(
-        r"""### 4.2 Timing results
+        r"""### 7.2 Timing results
 
 Three findings are operationally important. First, streamed construction of the Gaussian surface is inexpensive: it rises from less than one millisecond on the small grids to approximately 0.23 seconds for one million cells. Second, route generation stays below seven seconds in every measured case. The nonmonotonic decline from 6.52 seconds at 500² to 4.24 seconds at 1000² is intentional: grids above 250,000 cells switch from exhaustive template translation to the sampled-anchor strategy described in Section 3.3. Consequently, timings on opposite sides of that threshold measure two algorithmic regimes.
 
@@ -390,7 +399,7 @@ Observed resident memory after individual cases stayed below approximately 304 M
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        """## 5. Exact validation on a small instance
+        """## 4. Exact validation on a small instance
 
 The next experiment solves a 6 × 6, two-drone, five-cell instance twice: once with the full time-indexed model and once with the scalable method. It also includes a sequential endpoint-greedy baseline in the spirit of the original post. The exact solver's status and bound provide a genuine certificate."""
     )
@@ -452,7 +461,7 @@ cells.append(
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        """## 6. Full-scale plans for different fleet sizes and budgets
+        """## 5. Full-scale plans for different fleet sizes and budgets
 
 We now return to all 10,000 cells. Candidate routes only depend on path length, so the same library can be reused across fleet sizes. This is operationally convenient: once routes are generated, incident command can rapidly evaluate how the allocation changes as drones become available."""
     )
@@ -532,7 +541,7 @@ plt.show()"""
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""## 7. A second search round after no detection
+        r"""## 6. A second search round after no detection
 
 Suppose four drones complete the 100-cell routes from round 1 but do not find the target. Let $p_i^{(r)}$ denote the probability at the start of round $r$, $s_i^{(r)}$ the number of successful scans assigned to cell $i$ during that round, and $q_i$ the probability of detecting the target in one scan conditional on its presence. Under conditionally independent detection attempts, the likelihood of no detection in cell $i$ is
 
@@ -563,7 +572,7 @@ This update assumes the drones **completed** their searches and failed to detect
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""### 7.1 Avoiding isolated unsearched cells
+        r"""### 6.1 Avoiding isolated unsearched cells
 
 Pure probability maximization can select a route that surrounds a low-valued cell without scanning it. Such a one-cell pocket is visually awkward and may be operationally undesirable even though the route is mathematically valid. Let
 
@@ -717,6 +726,8 @@ cells.append(
         r"""The unconstrained second-round plan enclosed four individual cells. Enforcing (17) removes all four at a cost of approximately 0.15 percentage points of conditional detection probability (7.81% to 7.66%). The plotted plan is the constrained solution. Zero-valued cells remain legal transit cells but contribute nothing to the objective. Conditional and cumulative probabilities are kept separate: round 2's objective is conditional on the round-1 failure, while its unconditional contribution is multiplied by the probability of reaching round 2."""
     )
 )
+
+cells.extend(timing_cells)
 
 cells.append(
     nbf.v4.new_markdown_cell(
