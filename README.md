@@ -16,7 +16,7 @@ round, `update_probability_after_no_detection` applies a Bayesian update,
 zeros searched cells under perfect detection, renormalizes the remaining
 surface, and allows the next fleet to be optimized against that posterior.
 
-The main deliverables are `optimal_search.ipynb` and its executed export, `optimal_search.html`. The reusable implementation is in `search_planner.py`.
+The main deliverables are `optimal_search.ipynb` and its executed export, `optimal_search.html`. The notebook includes a paper-style mathematical formulation, exact time-indexed model, path-based restricted master, route-generation and refinement algorithms, global bounds, and sequential Bayesian updating. The reusable implementation is in `search_planner.py`.
 
 ## Results
 

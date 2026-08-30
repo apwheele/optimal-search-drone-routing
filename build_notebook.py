@@ -18,11 +18,23 @@ cells.append(
     nbf.v4.new_markdown_cell(
         r"""# From probability map to coordinated drone routes
 
-## A practical solution to the optimal-search-path problem
+## Abstract
+
+**Objective.** We study the allocation of multiple search drones over a raster-valued posterior probability surface when each drone has a fixed scan budget and must follow a contiguous path. The objective is to maximize the probability mass searched without duplicate coverage.
+
+**Methods.** The problem is formulated as a free-origin, free-destination grid variant of the Team Orienteering Problem. A time-indexed binary program provides exact solutions and feasibility certificates on small instances. For operational-scale rasters, we develop a path-based matheuristic comprising serpentine sweep generation, bidirectional beam construction, an exact CP-SAT set-packing master, and incumbent-centered translation enrichment. A cell-order-statistic relaxation supplies a valid global upper bound. Negative search outcomes are incorporated through sequential Bayesian updating.
+
+**Results.** On the 100 × 100 multimodal surface introduced by Wheeler, the refined four-drone, 100-cell plan searches 8.036% of prior probability and attains 99.48% of the unconstrained top-400-cell upper bound. Four 300-cell routes search 21.70% of prior probability. In a two-round four-drone example, a negative first search sets 400 cells to zero posterior probability; replanning raises cumulative detection probability from 8.04% after round 1 to 15.21% after round 2. The scalable method is also compared with a globally optimal solution on a small instance.
+
+**Conclusions.** Explicit route ordering eliminates the disconnected-subtour defect of cell-selection formulations. The proposed decomposition produces valid, coordinated paths and quantifies solution quality without claiming global optimality when the full path space has not been enumerated.
+
+**Keywords:** team orienteering; search theory; unmanned aerial vehicles; set packing; CP-SAT; Bayesian updating; route planning.
+
+## Motivation and contribution
 
 Andrew Wheeler's [2020 post](https://andrewpwheeler.com/2020/12/20/a-failed-attempt-at-optimal-search-paths/) asks a deceptively hard question: given a multimodal probability surface, how should a limited number of searchers traverse it without disconnected “hop-scotching”? This notebook turns that question into a precise optimization problem, validates the model against exact solutions, and solves Wheeler's original 100 × 100 simulated surface at operational scale.
 
-**Bottom line.** This is a grid **team-orienteering** problem. A full integer program can certify small cases but is too large for long routes on 10,000 cells. The useful solution is a decomposition: generate a diverse library of legal flight paths, then let CP-SAT select the best nonoverlapping team. Every plotted line below is an ordered, contiguous route—not merely a connected set of cells.
+The central contribution is a distinction between **selecting valuable cells** and **constructing executable routes**. The exact formulation makes traversal order explicit. The scalable method then separates legal single-drone path construction from multi-drone coordination, while retaining independent feasibility checks and honest upper bounds. Every plotted line below is an ordered, contiguous route—not merely a connected set of cells.
 
 The motivation is wilderness search and rescue, but the same machinery applies to disaster assessment, wildlife surveys, maritime search, infrastructure inspection, environmental sensing, and other spatial searches with a probabilistic reward map."""
     )
@@ -83,44 +95,186 @@ print(f"Probability sums to {probability.sum():.12f}")"""
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""## 2. What is being optimized?
+        r"""## 2. Mathematical formulation
 
-Let $p_i$ be the posterior probability that the target is in cell $i$. Drone $d$ follows an ordered route $R_d=(v_{d,1},\ldots,v_{d,L})$. Under perfect detection in a scanned cell, a stationary target, and no credit for repeat coverage, the objective is
+### 2.1 Search graph, routes, and decision criterion
 
-$$\max \sum_{d=1}^{k}\sum_{i\in R_d}p_i.$$
+Let $G=(V,A)$ be the directed search graph induced by a rectangular raster. A vertex $i\in V$ represents one searchable cell. Both orientations of arc $(i,j)$ belong to $A$ when $i$ and $j$ share an edge or corner; equivalently, their row and column indices have Chebyshev distance one. Let $n=|V|$, let $D=\{1,\ldots,k\}$ denote the drones, and let $T=\{1,\ldots,L\}$ denote the ordered scan positions available to each drone.
 
-The constraints are:
+The probability vector $p=(p_1,\ldots,p_n)$ is a posterior distribution for one stationary target:
 
-1. consecutive route cells share an edge or corner (8-neighbor/queen adjacency);
-2. each route contains exactly $L$ distinct cells;
-3. routes are mutually disjoint, so probability is not counted twice;
-4. starts and ends are free; and
-5. turns cost nothing, as requested.
+$$p_i\geq 0, \qquad \sum_{i\in V}p_i=1.$$
 
-Here $L$ counts scanned cells, so a route has $L-1$ between-cell moves. If “budget” instead means distance, use $L=B+1$. Free starts model drones deployed near their assigned search area. A common base, obstacles, terrain-dependent travel times, mandatory returns, heterogeneous sensor widths, or non-unit probability of detection would change the model and should be represented explicitly.
+A route for drone $d$ is an injective map $r_d:T\rightarrow V$ such that $(r_d(t-1),r_d(t))\in A$ for every $t=2,\ldots,L$. Thus, a route is an ordered elementary path, not merely a connected subset of cells. The team plan is $R=(r_1,\ldots,r_k)$, subject to vertex disjointness across drones. Write
 
-The sum of covered probabilities is also the probability of finding the target under these assumptions. With cell-specific probability of detection $q_i$, replace $p_i$ by $p_iq_i$. Repeated imperfect searches require the nonlinear cumulative reward $p_i[1-(1-q_i)^{n_i}]$."""
+| Symbol | Definition |
+|:--|:--|
+| $G=(V,A)$ | Directed queen-adjacency grid graph |
+| $n=|V|$ | Number of raster cells |
+| $D=\{1,\ldots,k\}$ | Drone index set |
+| $T=\{1,\ldots,L\}$ | Ordered scan positions per drone |
+| $p_i$ | Posterior probability that the target occupies cell $i$ |
+| $r_d(t)$ | Cell visited by drone $d$ at route position $t$ |
+| $S(R)$ | Union of cells searched by team plan $R$ |
+| $F(R;p)$ | Probability mass covered by plan $R$ under surface $p$ |
+
+$$S(R)=\bigcup_{d\in D}\{r_d(t):t\in T\}$$
+
+for the searched cells. Under perfect detection, one stationary target, and no value from searching a cell twice within a round, the probability of detection is
+
+$$F(R;p)=\Pr(\text{find}\mid R,p)=\sum_{i\in S(R)}p_i.$$
+
+The optimization problem is therefore
+
+$$R^*\in\arg\max_{R\in\mathcal F_{k,L}(G)}F(R;p),$$
+
+where $\mathcal F_{k,L}(G)$ is the set of $k$ mutually vertex-disjoint elementary paths containing exactly $L$ vertices each. This is a free-origin, free-destination, unit-travel-time grid variant of the [Team Orienteering Problem](https://doi.org/10.1016/0377-2217(94)00289-4) (Chao, Golden, & Wasil, 1996).
+
+### 2.2 Operational assumptions
+
+The estimand $F(R;p)$ has a direct probability interpretation only under the following assumptions:
+
+1. **One stationary target.** The target does not move during a planning round.
+2. **Perfect cell-level detection.** If the target is in a scanned cell, it is found with probability one.
+3. **Unit scan and travel cost.** Selecting $L$ cells represents $L-1$ adjacent moves plus the initial scanned cell.
+4. **Free deployment and recovery.** Launch, recovery, and travel from a base to the first cell are outside the stated budget.
+5. **Zero turn cost.** Direction changes do not alter resource consumption.
+6. **No obstacles.** Every grid cell is flyable, and every queen-adjacent transition is feasible.
+7. **No duplicate reward.** Within a round, a cell contributes probability mass at most once.
+
+These assumptions isolate the routing question posed in the original example. They are not innocuous. A common depot adds origin and terminal constraints; wind and terrain replace unit arcs with directed costs; no-fly cells delete vertices or arcs; and a sensor footprint replaces vertex reward by the probability mass of the union of visible cells.
+
+For a single scan with cell-specific probability of detection $q_i$, the expected reward becomes $p_iq_i$. If a plan permits $n_i$ independent scans of cell $i$, its contribution is nonlinear:
+
+$$p_i\left[1-(1-q_i)^{n_i}\right].$$
+
+The present within-round model forbids repeat credit, while the sequential analysis later in the notebook updates the posterior between rounds."""
     )
 )
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""## 3. Why the earlier formulations struggle
+        r"""## 3. Optimization methodology
 
-This is the **team orienteering problem** (TOP): multiple length-limited paths collect vertex prizes. TOP is NP-hard. A model that merely selects neighboring cells does not define an order and may contain disconnected components or subtours. A correct time-indexed model uses a binary variable $x_{dti}$ for drone $d$, step $t$, and cell $i$, with
+### 3.1 Exact time-indexed formulation
 
-$$\sum_i x_{dti}=1, \qquad
-x_{dti}\leq\sum_{j\in N(i)}x_{d,t-1,j}, \qquad
-\sum_{d,t}x_{dti}\leq1.$$
+Define a binary decision variable
 
-Those constraints enforce an actual ordered simple path, but the 100 × 100, 8-drone, 300-cell case would require 24 million binary visit variables before presolve. That is why a correct direct model is useful as an auditor on small grids, not as the primary full-scale planner.
+$$x_{dti}=\begin{cases}
+1,&\text{if drone }d\text{ scans cell }i\text{ at position }t,\\
+0,&\text{otherwise.}
+\end{cases}$$
 
-The scalable solver uses two levels:
+Let $N(i)=\{j:(j,i)\in A\}$ be the predecessor neighbors of cell $i$. The complete time-indexed integer program is
 
-- **Route generation:** translated and rotated serpentine sweeps cover compact high-mass regions; bidirectional beam search contributes irregular probability-following routes and geographic diversity. After each master solve, nearby translations of the incumbent routes are added and the master is re-solved so a useful route is not discarded merely because it scores slightly worse in isolation.
-- **Team selection:** one Boolean variable per complete route; CP-SAT chooses exactly $k$ routes, with one set-packing constraint per cell to prevent overlap.
+$$\max_x \quad \sum_{d\in D}\sum_{t\in T}\sum_{i\in V}p_i x_{dti} \tag{1}$$
 
-This master problem is solved exactly over the generated route library. It is not a proof of global optimality because ungenerated routes remain possible. To report quality honestly, we use three distinct checks: an exact small-case optimum, the CP-SAT bound within the candidate library, and a global relaxation equal to the sum of the largest $kL$ cell probabilities (which ignores contiguity and is therefore optimistic)."""
+subject to
+
+$$\sum_{i\in V}x_{dti}=1
+\qquad \forall d\in D,\ t\in T, \tag{2}$$
+
+$$x_{dti}\leq\sum_{j\in N(i)}x_{d,t-1,j}
+\qquad \forall d\in D,\ i\in V,\ t=2,\ldots,L, \tag{3}$$
+
+$$\sum_{d\in D}\sum_{t\in T}x_{dti}\leq1
+\qquad \forall i\in V, \tag{4}$$
+
+$$x_{dti}\in\{0,1\}. \tag{5}$$
+
+Constraint (2) assigns exactly one cell to every drone-position pair. Constraint (3) forces each assigned cell to follow an adjacent assigned cell. Constraint (4) simultaneously prevents self-intersection and inter-drone overlap. Free starts and ends require no depot constraints. Interchangeable-drone symmetry is reduced computationally by ordering start-cell indices,
+
+$$\sum_{i\in V} i\,x_{d,1,i}<\sum_{i\in V} i\,x_{d+1,1,i},
+\qquad d=1,\ldots,k-1. \tag{6}$$
+
+**Proposition 1 (route feasibility).** Constraints (2)–(5) are equivalent to selecting $k$ mutually vertex-disjoint elementary paths of length $L$ in $G$.
+
+*Proof.* For each $(d,t)$, (2) selects one vertex. For $t>1$, (3) guarantees an arc from the unique vertex selected at $t-1$ to the vertex selected at $t$. Constraint (4) prevents any selected vertex from appearing at two positions or on two drones, so each resulting walk is elementary and routes are mutually disjoint. Conversely, the incidence vector of any $k$ such paths satisfies (2)–(5). $\square$
+
+This formulation is exact, but it contains $kLn$ binary variables and approximately $kLn+n$ structural constraints. The largest experiment here ($n=10{,}000$, $k=8$, $L=300$) would create 24 million binary variables before presolve. Since even the single-route orienteering problem is NP-hard, this growth is structural rather than a solver-specific defect. Time-indexed and path-based exact formulations are standard in the TOP literature; see [Poggi, Viana, and Uchoa (2010)](https://doi.org/10.4230/OASIcs.ATMOS.2010.142).
+
+### 3.2 Exact path-based master problem
+
+Let $\Omega_L$ be the set of every elementary $L$-vertex path in $G$. For route $r\in\Omega_L$, define its cell-incidence coefficient and reward as
+
+$$a_{ir}=\mathbf 1(i\in r), \qquad c_r=\sum_{i\in V}p_i a_{ir}.$$
+
+With $z_r=1$ when route $r$ is assigned to a drone, an alternative exact formulation is
+
+$$\max_z \quad \sum_{r\in\Omega_L}c_rz_r \tag{7}$$
+
+subject to
+
+$$\sum_{r\in\Omega_L}z_r=k, \tag{8}$$
+
+$$\sum_{r\in\Omega_L}a_{ir}z_r\leq1
+\qquad \forall i\in V, \tag{9}$$
+
+$$z_r\in\{0,1\}. \tag{10}$$
+
+This is a weighted cardinality-constrained set-packing model. If all of $\Omega_L$ were available, (7)–(10) would be exact. However, $|\Omega_L|$ grows exponentially. Exact branch-cut-and-price methods address this with dual-guided route pricing. The implementation here instead constructs a finite library $\widehat\Omega_L\subset\Omega_L$ heuristically, then solves (7)–(10) exactly over that restricted library using Google OR-Tools CP-SAT. It is therefore a **matheuristic with an exact restricted master**, not full column generation.
+
+### 3.3 Route generation
+
+Two complementary mechanisms populate $\widehat\Omega_L$.
+
+**Compact sweep templates.** For each selected width $w$, a serpentine path is constructed in a $w\times\lceil L/w\rceil$ rectangle and truncated after exactly $L$ cells. All unique rotations and reflections are considered. For a relative template $Q=\{(\Delta r_t,\Delta c_t)\}_{t=1}^L$, every feasible translation has score
+
+$$c(Q;r,c)=\sum_{t=1}^L p_{r+\Delta r_t,\ c+\Delta c_t}.$$
+
+These scores are evaluated vectorially. The highest-scoring global anchors and the strongest anchor in each spatial stratum are retained, preserving both intensification near modes and geographic diversity.
+
+**Bidirectional beam construction.** Beam states contain an ordered partial path $P$, its visited set, its two endpoints, and accumulated reward $g(P)=\sum_{i\in P}p_i$. A state can be extended by an unused neighbor of either endpoint. Candidate extensions are ranked by
+
+$$h(P\oplus v)=g(P\oplus v)
++0.65\max_{u\in N(v)\setminus(P\cup\{v\})}p_u
++0.03\,\bar p\,|N(v)\setminus(P\cup\{v\})|, \tag{11}$$
+
+where $\bar p=1/n$. The second term is a one-step probability look-ahead; the third weakly discourages trapping an endpoint. The implementation retains 18 states per beam step and begins from probability-separated seeds plus a coarse geographic grid. Only complete, validated $L$-cell paths enter the library.
+
+### 3.4 Restricted-master refinement
+
+Initial pruning ranks routes individually, whereas the master values how routes pack jointly. This distinction caused the visible gap in the first 4-by-100 result. To correct it efficiently, after each restricted-master solution the algorithm translates each incumbent route by
+
+$$(\delta_r,\delta_c)\in\{-\rho,\ldots,\rho\}^2\setminus\{(0,0)\},$$
+
+with $\rho=3$, discards out-of-grid translations, adds previously unseen routes, and re-solves. Three enrichment rounds are used. Translation preserves path simplicity and adjacency by construction; the master continues to enforce inter-route disjointness. This neighborhood enrichment recovered the cells between the original orange and green routes without enumerating all translations of all templates.
+
+The full procedure is:
+
+1. Generate sweep and beam routes to form $\widehat\Omega_L$.
+2. Solve the restricted set-packing master (7)–(10).
+3. Translate incumbent routes within radius $\rho$ and add new feasible columns.
+4. Repeat steps 2–3 for three rounds.
+5. Validate route length, bounds, within-route uniqueness, between-route disjointness, and every consecutive move.
+
+This design follows the broader TOP literature's use of local-search diversification and exact route-selection ideas, while exploiting the regular raster and zero-turn-cost assumptions of this application. See, for example, [Vansteenwegen et al. (2009)](https://doi.org/10.1016/j.ejor.2008.02.037) and the [orienteering survey](https://doi.org/10.1016/j.ejor.2010.03.045).
+
+### 3.5 Bounds and interpretation of solver status
+
+Let $p_{(1)}\geq\cdots\geq p_{(n)}$ be the cell probabilities in descending order and let $m=kL$. Any feasible plan covers exactly $m$ distinct cells, so
+
+$$U_m=\sum_{j=1}^{m}p_{(j)} \tag{12}$$
+
+is a valid global upper bound obtained by dropping all path and adjacency constraints.
+
+**Proposition 2 (global quality certificate).** If a feasible plan has value $C$ and the unknown global optimum is $C^*$, then
+
+$$C\leq C^*\leq U_m
+\qquad\text{and}\qquad
+\frac{C}{C^*}\geq\frac{C}{U_m}. \tag{13}$$
+
+Thus $1-C/U_m$ is a conservative maximum relative shortfall, even though $U_m$ may itself be unattainable. Separately, CP-SAT's best bound for (7)–(10) measures the gap **within** $\widehat\Omega_L$. A zero restricted-master gap proves that no better combination exists among generated routes; it does not prove $C=C^*$ unless the full route set has been enumerated. The notebook reports these two quantities separately and reserves the label “exact optimum” for the independently solved small time-indexed instance."""
+    )
+)
+
+cells.append(
+    nbf.v4.new_markdown_cell(
+        r"""### 3.6 Computational implementation
+
+The implementation supplies integer objective coefficients to CP-SAT, so route probabilities are multiplied by $10^{12}$ and rounded to the nearest integer. This scale preserves distinctions far below any reported result while remaining safely inside signed 64-bit arithmetic. Each restricted master receives a 12-second limit in the full experiments, uses eight search workers, and records the returned feasibility status and best bound. Small exact instances receive a longer limit. Route generation is deterministic; CP-SAT random seeds are fixed, although parallel search order can vary by platform. Every reported full-scale restricted master terminated with an optimal status for its final enriched library.
+
+The implementation treats validation as part of the algorithm rather than presentation. For every returned plan it independently checks: (i) exactly $L$ cells per drone; (ii) valid cell indices; (iii) no within-route repeat; (iv) Chebyshev distance one for every move; and (v) no cell shared between drones. Objective values are then recomputed directly from the probability raster rather than trusted from solver-scaled coefficients."""
     )
 )
 
@@ -270,13 +424,30 @@ cells.append(
     nbf.v4.new_markdown_cell(
         r"""## 6. A second search round after no detection
 
-Suppose four drones complete the 100-cell routes from round 1 but do not find the target. With perfect detection, “target not detected” is impossible in any cell that was successfully searched, so those 400 cells receive posterior probability zero. The remaining probability is renormalized before planning round 2:
+Suppose four drones complete the 100-cell routes from round 1 but do not find the target. Let $p_i^{(r)}$ denote the probability at the start of round $r$, $s_i^{(r)}$ the number of successful scans assigned to cell $i$ during that round, and $q_i$ the probability of detecting the target in one scan conditional on its presence. Under conditionally independent detection attempts, the likelihood of no detection in cell $i$ is
 
-$$p_i^{(2)}=\frac{p_i^{(1)}(1-q_i)^{s_i}}{\sum_jp_j^{(1)}(1-q_j)^{s_j}},$$
+$$\ell_i^{(r)}=(1-q_i)^{s_i^{(r)}}.$$
 
-where $s_i=1$ if cell $i$ was searched and $q_i$ is its probability of detection. Here $q_i=1$, producing literal zero-probability tracks. For an imperfect sensor, the same function accepts $q_i<1$ and merely reduces those probabilities.
+Bayes' rule gives the posterior after the negative search:
 
-This assumes the drones **completed** their searches and failed to detect the target. If a drone itself failed before scanning its assigned cells, those unsearched cells must retain their prior probability."""
+$$p_i^{(r+1)}=
+\frac{p_i^{(r)}\ell_i^{(r)}}
+{\sum_{j\in V}p_j^{(r)}\ell_j^{(r)}}. \tag{14}$$
+
+The denominator is the marginal probability of observing no detection during round $r$. With perfect detection, $q_i=1$, a successfully searched cell has $\ell_i^{(r)}=0$ and therefore receives literal zero posterior probability. With imperfect detection, searched cells retain diminished mass and can rationally be searched again.
+
+Let $C_r$ be the optimized conditional detection probability in round $r$. The unconditional contribution of round $r$ is
+
+$$\Delta_r=C_r\prod_{h=1}^{r-1}(1-C_h), \tag{15}$$
+
+and cumulative detection probability through $R$ rounds is
+
+$$C_{1:R}=\sum_{r=1}^{R}\Delta_r
+=1-\prod_{r=1}^{R}(1-C_r). \tag{16}$$
+
+Equations (14)–(16) assume a stationary target. If movement between rounds is represented by a Markov transition matrix $M$, the negative-search posterior is propagated before replanning: $p^{(r+1)}=M^\top\widetilde p^{(r)}$.
+
+This update assumes the drones **completed** their searches and failed to detect the target. If a drone itself failed before scanning its assigned cells, those unsearched cells have $s_i^{(r)}=0$ and retain their prior likelihood weight. Zero-probability cells remain traversable in the routing graph; converting them to obstacles would be a different operational assumption."""
     )
 )
 
@@ -415,11 +586,15 @@ cells.append(
     nbf.v4.new_markdown_cell(
         r"""## References
 
+- Chao, I.-M., Golden, B. L., & Wasil, E. A. (1996). [The team orienteering problem](https://doi.org/10.1016/0377-2217(94)00289-4). *European Journal of Operational Research, 88*(3), 464–474.
+- Perron, L., & Furnon, V. (2019). [OR-Tools](https://developers.google.com/optimization/). Google optimization software.
+- Poggi, M., Viana, H., & Uchoa, E. (2010). [The Team Orienteering Problem: Formulations and Branch-Cut and Price](https://doi.org/10.4230/OASIcs.ATMOS.2010.142). *OpenAccess Series in Informatics, 14*, 142–155.
 - Rossmo, D. K., Velarde, L., & Mahood, T. (2019). [Optimizing Wilderness Search and Rescue: A Bayesian GIS Analysis](https://journalofsar.com/wp-content/uploads/2019/11/vol3iss2_complete.pdf#page=30). *Journal of Search & Rescue, 3*(2), 44–58.
+- Vansteenwegen, P., Souffriau, W., Vanden Berghe, G., & Van Oudheusden, D. (2009). [A guided local search metaheuristic for the team orienteering problem](https://doi.org/10.1016/j.ejor.2008.02.037). *European Journal of Operational Research, 196*(1), 118–127.
 - Vansteenwegen, P., Souffriau, W., & Van Oudheusden, D. (2011). [The orienteering problem: A survey](https://doi.org/10.1016/j.ejor.2010.03.045). *European Journal of Operational Research, 209*(1), 1–10.
 - Wheeler, A. P. (2020). [A failed attempt at optimal search paths](https://andrewpwheeler.com/2020/12/20/a-failed-attempt-at-optimal-search-paths/).
 
-*Reproducibility:* the notebook uses deterministic route generation and fixed CP-SAT seeds. `validate_paths` checks exact length, bounds, no revisits, no inter-drone overlaps, and every move's 8-neighbor adjacency before results are reported."""
+*Reproducibility:* route generation is deterministic and CP-SAT seeds are fixed. `validate_paths` checks exact length, bounds, no revisits, no inter-drone overlaps, and every move's 8-neighbor adjacency before results are reported."""
     )
 )
 
