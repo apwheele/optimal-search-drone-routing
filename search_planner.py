@@ -62,13 +62,16 @@ def make_probability_surface(
         dtype=float,
     )
     repeats = np.array([13, 5, 5, 5, 4, 4, 4, 4])
-    observations = np.repeat(centers, repeats, axis=0)
     axis = np.linspace(0.0, extent, grid_size)
     x, y = np.meshgrid(axis, axis)
-    sample = np.column_stack((x.ravel(), y.ravel()))
-    squared_distance = ((sample[:, None, :] - observations[None, :, :]) ** 2).sum(axis=2)
-    density = np.exp(-squared_distance / (2.0 * bandwidth**2)).sum(axis=1)
-    probability = (density / density.sum()).reshape(grid_size, grid_size)
+    density = np.zeros_like(x, dtype=float)
+    # Accumulate weighted centers rather than materializing N x 44 x 2
+    # differences. This is equivalent to repeating the centers and scales to
+    # million-cell rasters without a multi-gigabyte temporary array.
+    for (center_x, center_y), weight in zip(centers, repeats):
+        squared_distance = (x - center_x) ** 2 + (y - center_y) ** 2
+        density += weight * np.exp(-squared_distance / (2.0 * bandwidth**2))
+    probability = density / density.sum()
     return x, y, probability
 
 
@@ -226,6 +229,8 @@ def _promising_anchors(
 
 
 def _sweep_candidates(probability: np.ndarray, length: int) -> list[Candidate]:
+    if probability.size > 250_000:
+        return _sampled_sweep_candidates(probability, length)
     rows, cols = probability.shape
     found: dict[tuple[int, ...], Candidate] = {}
     for width in _useful_widths(length):
@@ -240,7 +245,9 @@ def _sweep_candidates(probability: np.ndarray, length: int) -> list[Candidate]:
                 score_grid += probability[dr : dr + score_grid.shape[0], dc : dc + score_grid.shape[1]]
             for anchor_row, anchor_col in _promising_anchors(score_grid):
                 coords = template + np.array([anchor_row, anchor_col], dtype=np.int16)
-                path = tuple((coords[:, 0] * cols + coords[:, 1]).astype(int).tolist())
+                path = tuple(
+                    (coords[:, 0].astype(np.int64) * cols + coords[:, 1]).astype(int).tolist()
+                )
                 key = _canonical(path)
                 score = float(score_grid[anchor_row, anchor_col])
                 candidate = Candidate(path=path, score=score, source="sweep")
@@ -249,14 +256,85 @@ def _sweep_candidates(probability: np.ndarray, length: int) -> list[Candidate]:
     return list(found.values())
 
 
+def _sampled_sweep_candidates(probability: np.ndarray, length: int) -> list[Candidate]:
+    """Generate sweep routes from sampled anchors on very large rasters.
+
+    Exhaustively scoring every template translation is useful on small and
+    medium grids but scales linearly in the number of cells for every path
+    template. Above 250,000 cells, templates are instead centered near
+    probability-separated and geographically spaced seeds, with a local
+    anchor neighborhood. This keeps route generation approximately independent
+    of raster area after the initial seed selection.
+    """
+
+    rows, cols = probability.shape
+    found: dict[tuple[int, ...], Candidate] = {}
+    seeds = _diverse_seeds(probability, length, count=36)
+    seed_coords = np.array([divmod(seed, cols) for seed in seeds], dtype=int)
+    offsets = np.array([(dr, dc) for dr in range(-2, 3) for dc in range(-2, 3)], dtype=int)
+    for width in _useful_widths(length):
+        base = _snake_template(length, width)
+        for template in _template_transforms(base):
+            height = int(template[:, 0].max()) + 1
+            box_width = int(template[:, 1].max()) + 1
+            if height > rows or box_width > cols:
+                continue
+            center = np.rint(template.mean(axis=0)).astype(int)
+            anchors = seed_coords[:, None, :] - center + offsets[None, :, :]
+            anchors = anchors.reshape(-1, 2)
+            valid = (
+                (anchors[:, 0] >= 0)
+                & (anchors[:, 0] + height <= rows)
+                & (anchors[:, 1] >= 0)
+                & (anchors[:, 1] + box_width <= cols)
+            )
+            anchors = np.unique(anchors[valid], axis=0)
+            if anchors.size == 0:
+                continue
+            values = probability[
+                anchors[:, 0, None] + template[None, :, 0],
+                anchors[:, 1, None] + template[None, :, 1],
+            ].sum(axis=1)
+            keep: set[int] = set()
+            global_count = min(30, len(values))
+            global_indices = (
+                np.argpartition(values, -global_count)[-global_count:]
+                if global_count < len(values)
+                else np.arange(len(values))
+            )
+            keep.update(map(int, global_indices))
+            row_bins = np.minimum(3, anchors[:, 0] * 4 // max(rows, 1))
+            col_bins = np.minimum(3, anchors[:, 1] * 4 // max(cols, 1))
+            for row_bin in range(4):
+                for col_bin in range(4):
+                    members = np.flatnonzero((row_bins == row_bin) & (col_bins == col_bin))
+                    if members.size:
+                        keep.add(int(members[np.argmax(values[members])]))
+            for index in keep:
+                anchor_row, anchor_col = map(int, anchors[index])
+                coords = template + np.array([anchor_row, anchor_col], dtype=np.int16)
+                path = tuple((coords[:, 0].astype(np.int64) * cols + coords[:, 1]).astype(int).tolist())
+                key = _canonical(path)
+                candidate = Candidate(path=path, score=float(values[index]), source="sampled sweep")
+                if key not in found or found[key].score < candidate.score:
+                    found[key] = candidate
+    return list(found.values())
+
+
 def _diverse_seeds(probability: np.ndarray, length: int, count: int = 28) -> list[int]:
     rows, cols = probability.shape
     separation = max(2, int(sqrt(length) / 3))
     seeds: list[int] = []
+    blocked = np.zeros((rows, cols), dtype=bool)
     for node in np.argsort(probability.ravel())[::-1]:
         row, col = divmod(int(node), cols)
-        if all(max(abs(row - divmod(old, cols)[0]), abs(col - divmod(old, cols)[1])) >= separation for old in seeds):
+        if not blocked[row, col]:
             seeds.append(int(node))
+            radius = separation - 1
+            blocked[
+                max(0, row - radius) : min(rows, row + radius + 1),
+                max(0, col - radius) : min(cols, col + radius + 1),
+            ] = True
             if len(seeds) == count:
                 break
     # Ensure broad geographic coverage even when most probability lies in one mode.
@@ -273,7 +351,14 @@ def _beam_candidates(
 
     shape = probability.shape
     flat = probability.ravel()
-    neighbors = [_neighbor_ids(node, shape) for node in range(flat.size)]
+    mean_probability = float(flat.mean())
+    neighbor_cache: dict[int, list[int]] = {}
+
+    def neighbors(node: int) -> list[int]:
+        if node not in neighbor_cache:
+            neighbor_cache[node] = _neighbor_ids(node, shape)
+        return neighbor_cache[node]
+
     completed: dict[tuple[int, ...], Candidate] = {}
     for seed in _diverse_seeds(probability, length):
         # Entries are (ranking value, true score, path, used cells).
@@ -285,17 +370,17 @@ def _beam_candidates(
             signatures: set[tuple[int, int, int]] = set()
             for _, score, path, used in beam:
                 moves: list[tuple[int, int]] = []
-                moves.extend((0, node) for node in neighbors[path[0]] if node not in used)
-                moves.extend((1, node) for node in neighbors[path[-1]] if node not in used)
+                moves.extend((0, node) for node in neighbors(path[0]) if node not in used)
+                moves.extend((1, node) for node in neighbors(path[-1]) if node not in used)
                 # Limit branching to the best moves per partial route.
                 moves.sort(key=lambda item: float(flat[item[1]]), reverse=True)
                 for side, node in moves[:8]:
                     new_path = (node,) + path if side == 0 else path + (node,)
                     new_used = used | {node}
                     new_score = score + float(flat[node])
-                    onward = [n for n in neighbors[node] if n not in new_used]
+                    onward = [n for n in neighbors(node) if n not in new_used]
                     lookahead = max((float(flat[n]) for n in onward), default=-1.0)
-                    accessibility = len(onward) * float(flat.mean()) * 0.03
+                    accessibility = len(onward) * mean_probability * 0.03
                     ranking = new_score + 0.65 * max(lookahead, 0.0) + accessibility
                     signature = (new_path[0], new_path[-1], hash(new_used))
                     if signature not in signatures:
@@ -397,12 +482,12 @@ def _solve_candidate_master(
 
     model = cp_model.CpModel()
     choose = [model.new_bool_var(f"route_{index}") for index in range(len(candidates))]
-    by_cell: list[list[int]] = [[] for _ in range(cell_count)]
+    by_cell: dict[int, list[int]] = {}
     for index, candidate in enumerate(candidates):
         for node in candidate.path:
-            by_cell[node].append(index)
+            by_cell.setdefault(node, []).append(index)
     model.add(sum(choose) == drones)
-    for covering in by_cell:
+    for covering in by_cell.values():
         if len(covering) > 1:
             model.add(sum(choose[index] for index in covering) <= 1)
     scale = 10**12
@@ -475,7 +560,11 @@ def plan_from_candidates(
     validate_paths(paths, probability.shape, length)
     score = path_score(probability, paths)
     global_bound = float(np.sort(probability.ravel())[-drones * length :].sum())
-    candidate_gap = max(0.0, candidate_bound - score) / candidate_bound if candidate_bound > 0 else 0.0
+    candidate_gap = (
+        max(0.0, candidate_bound - score) / candidate_bound
+        if np.isfinite(candidate_bound) and candidate_bound > 0
+        else float("nan")
+    )
     if raw_status in {"OPTIMAL", "FEASIBLE"}:
         status = f"{raw_status} (enriched candidate library)"
     else:

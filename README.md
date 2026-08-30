@@ -24,6 +24,8 @@ The main deliverables are `optimal_search.ipynb` and its executed export, `optim
 - [Download the standalone HTML report](optimal_search.html)
 - [View the scenario results](artifacts/scenario_results.csv)
 - [View the sequential-round results](artifacts/sequential_round_results.csv)
+- [View the scaling benchmark](artifacts/scaling_benchmark.csv)
+- [View benchmark machine specifications](artifacts/benchmark_machine.json)
 
 ### Full-scale optimized flight paths
 
@@ -37,6 +39,10 @@ The main deliverables are `optimal_search.ipynb` and its executed export, `optim
 
 ![Round-1 routes, zeroed posterior cells, and optimized round-2 routes](artifacts/two_round_search.png)
 
+### Computational scaling
+
+![Timing by grid size and drone count](artifacts/timing_scaling.png)
+
 ## Reproduce
 
 ```powershell
@@ -44,3 +50,9 @@ The main deliverables are `optimal_search.ipynb` and its executed export, `optim
 ```
 
 The script uses `uv` in copy mode for compatibility with Dropbox on Windows and isolates Jupyter from machine-wide configuration. The notebook fixes the random seed and records route validity, objective values, upper bounds, and solver status.
+
+To rerun the longer timing benchmark separately:
+
+```powershell
+uv run python benchmark_scaling.py
+```

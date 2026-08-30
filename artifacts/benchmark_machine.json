@@ -1,0 +1,31 @@
+{
+  "benchmark_timestamp_local": "2026-08-30T12:09:12+01:00",
+  "operating_system": "Windows-10-10.0.19045-SP0",
+  "cpu": "Intel(R) Core(TM) i3-9100F CPU @ 3.60GHz",
+  "physical_cores": 4,
+  "logical_cores": 4,
+  "installed_memory_gib": 31.93,
+  "python_version": "3.12.12",
+  "numpy_version": "2.5.2",
+  "ortools_version": "9.15.6755",
+  "solver": "Google OR-Tools CP-SAT",
+  "solver_workers": 8,
+  "gpu_used": false,
+  "grid_sizes": [
+    10,
+    50,
+    100,
+    200,
+    500,
+    1000
+  ],
+  "drone_counts": [
+    1,
+    4,
+    8
+  ],
+  "master_time_limit_seconds_per_call": 5.0,
+  "refinement_rounds": 2,
+  "timing_repetitions": 1,
+  "timing_clock": "time.perf_counter wall-clock seconds"
+}

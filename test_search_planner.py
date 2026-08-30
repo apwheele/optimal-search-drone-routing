@@ -69,3 +69,13 @@ def test_negative_search_update_zeros_and_renormalizes():
 
     imperfect = update_probability_after_no_detection(prior, [[0]], detection_probability=0.5)
     assert np.allclose(imperfect.ravel(), [1 / 7, 2 / 7, 2 / 7, 2 / 7])
+
+
+def test_cell_ids_do_not_overflow_int16_boundary():
+    probability = np.ones((200, 200), dtype=float)
+    probability /= probability.sum()
+    candidates = generate_candidates(probability, length=5)
+    all_nodes = [node for candidate in candidates for node in candidate.path]
+    assert max(all_nodes) > np.iinfo(np.int16).max
+    assert min(all_nodes) >= 0
+    assert max(all_nodes) < probability.size

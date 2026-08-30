@@ -1673,6 +1673,7 @@ dependencies = [
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "ortools" },
     { name = "pandas" },
+    { name = "psutil" },
     { name = "pytest" },
 ]
 
@@ -1686,6 +1687,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "ortools", specifier = ">=9.12" },
     { name = "pandas", specifier = ">=2.2" },
+    { name = "psutil", specifier = ">=7.0" },
     { name = "pytest", specifier = ">=8.3" },
 ]
 

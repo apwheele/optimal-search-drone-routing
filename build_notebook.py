@@ -272,7 +272,7 @@ cells.append(
     nbf.v4.new_markdown_cell(
         r"""### 3.6 Computational implementation
 
-The implementation supplies integer objective coefficients to CP-SAT, so route probabilities are multiplied by $10^{12}$ and rounded to the nearest integer. This scale preserves distinctions far below any reported result while remaining safely inside signed 64-bit arithmetic. Each restricted master receives a 12-second limit in the full experiments, uses eight search workers, and records the returned feasibility status and best bound. Small exact instances receive a longer limit. Route generation is deterministic; CP-SAT random seeds are fixed, although parallel search order can vary by platform. Every reported full-scale restricted master terminated with an optimal status for its final enriched library.
+The restricted masters are solved with [Google OR-Tools CP-SAT](https://developers.google.com/optimization/cp/cp_solver) (Perron & Furnon, 2019). The implementation supplies integer objective coefficients, so route probabilities are multiplied by $10^{12}$ and rounded to the nearest integer. This scale preserves distinctions far below any reported result while remaining safely inside signed 64-bit arithmetic. Each restricted master receives a 12-second limit in the full experiments, uses eight search workers, and records the returned feasibility status and best bound. Small exact instances receive a longer limit. Route generation is deterministic; CP-SAT random seeds are fixed, although parallel search order can vary by platform. Every reported full-scale restricted master terminated with an optimal status for its final enriched library.
 
 The implementation treats validation as part of the algorithm rather than presentation. For every returned plan it independently checks: (i) exactly $L$ cells per drone; (ii) valid cell indices; (iii) no within-route repeat; (iv) Chebyshev distance one for every move; and (v) no cell shared between drones. Objective values are then recomputed directly from the probability raster rather than trusted from solver-scaled coefficients."""
     )
@@ -280,7 +280,116 @@ The implementation treats validation as part of the algorithm rather than presen
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        """## 4. Exact validation on a small instance
+        r"""## 4. Computational timing and scaling
+
+### 4.1 Benchmark design
+
+Wall-clock timing was measured separately for (i) probability-surface construction, (ii) candidate-route generation, and (iii) restricted-master solution plus translation refinement. Their sum is reported as **cold total time**. When several fleet sizes use the same grid and 100-cell route length, candidate generation is performed once and reused; the cold total nevertheless includes that measured generation cost to represent a fresh planning request. **Warm replanning time** is the planning column alone.
+
+The benchmark crosses grid sides $g\in\{10,50,100,200,500,1000\}$ with $k\in\{1,4,8\}$ drones. Routes contain 100 cells per drone whenever feasible. On the 10-by-10 grid, $L=\lfloor100/k\rfloor$ so mutually disjoint routes fit. To bound experiment duration, each restricted-master call receives five seconds and two translation-refinement rounds are used, for at most three master calls per scenario plus model-building time. These settings are deliberately shorter than the principal 100-by-100 analysis; solver status must therefore be read alongside time.
+
+Each case was run once with `time.perf_counter`; these are engineering measurements, not distributional estimates from repeated trials. The computer was otherwise available for normal interactive use. CP-SAT used CPU threads only—no GPU acceleration. The benchmark is fully reproducible with `uv run python benchmark_scaling.py`."""
+    )
+)
+
+cells.append(
+    nbf.v4.new_code_cell(
+        """import json
+
+with open(OUTPUT / "benchmark_machine.json", encoding="utf-8") as handle:
+    machine = json.load(handle)
+timings = pd.read_csv(OUTPUT / "scaling_benchmark.csv")
+
+machine_fields = [
+    ("CPU", machine["cpu"]),
+    ("Physical / logical cores", f'{machine["physical_cores"]} / {machine["logical_cores"]}'),
+    ("Installed memory", f'{machine["installed_memory_gib"]:.2f} GiB'),
+    ("Operating system", machine["operating_system"]),
+    ("Python", machine["python_version"]),
+    ("NumPy", machine["numpy_version"]),
+    ("Solver", f'{machine["solver"]} {machine["ortools_version"]}'),
+    ("CP-SAT workers", machine["solver_workers"]),
+    ("GPU used", machine["gpu_used"]),
+]
+machine_table = pd.DataFrame(machine_fields, columns=["component", "specification"])
+display(machine_table.style.hide(axis="index"))
+
+timing_table = timings[
+    [
+        "grid_side", "grid_cells", "drones", "cells_per_drone",
+        "surface_seconds", "candidate_generation_seconds",
+        "planning_seconds", "cold_total_seconds",
+        "initial_candidate_count", "fraction_of_global_bound", "status",
+    ]
+].copy()
+timing_table["grid"] = timing_table["grid_side"].astype(str) + "²"
+timing_table = timing_table.drop(columns="grid_side")
+timing_table = timing_table[
+    ["grid", "grid_cells", "drones", "cells_per_drone", "surface_seconds",
+     "candidate_generation_seconds", "planning_seconds", "cold_total_seconds",
+     "initial_candidate_count", "fraction_of_global_bound", "status"]
+]
+display(
+    timing_table.style.format(
+        {
+            "grid_cells": "{:,}",
+            "surface_seconds": "{:.3f}",
+            "candidate_generation_seconds": "{:.3f}",
+            "planning_seconds": "{:.3f}",
+            "cold_total_seconds": "{:.3f}",
+            "initial_candidate_count": "{:,}",
+            "fraction_of_global_bound": "{:.2%}",
+        }
+    ).hide(axis="index")
+)"""
+    )
+)
+
+cells.append(
+    nbf.v4.new_code_cell(
+        """fig, axes = plt.subplots(1, 2, figsize=(13, 4.7), constrained_layout=True)
+
+by_grid = timings.sort_values("grid_cells").drop_duplicates("grid_cells")
+axes[0].plot(by_grid["grid_cells"], by_grid["surface_seconds"], marker="o",
+             label="surface construction")
+axes[0].plot(by_grid["grid_cells"], by_grid["candidate_generation_seconds"], marker="o",
+             label="candidate generation")
+axes[0].axvline(250_000, color="gray", linestyle="--", linewidth=1,
+                label="large-grid strategy threshold")
+axes[0].set(xscale="log", yscale="log", xlabel="grid cells", ylabel="wall-clock seconds",
+            title="Raster-dependent stages")
+axes[0].grid(alpha=0.25, which="both")
+axes[0].legend(fontsize=8)
+
+for drones, group in timings.groupby("drones"):
+    group = group.sort_values("grid_cells")
+    axes[1].plot(group["grid_cells"], group["planning_seconds"], marker="o",
+                 label=f"{drones} drone{'s' if drones > 1 else ''}")
+axes[1].set(xscale="log", yscale="log", xlabel="grid cells", ylabel="wall-clock seconds",
+            title="Restricted master and refinement")
+axes[1].grid(alpha=0.25, which="both")
+axes[1].legend(fontsize=8)
+
+fig.savefig(OUTPUT / "timing_scaling.png", bbox_inches="tight")
+plt.show()"""
+    )
+)
+
+cells.append(
+    nbf.v4.new_markdown_cell(
+        r"""### 4.2 Timing results
+
+Three findings are operationally important. First, streamed construction of the Gaussian surface is inexpensive: it rises from less than one millisecond on the small grids to approximately 0.23 seconds for one million cells. Second, route generation stays below seven seconds in every measured case. The nonmonotonic decline from 6.52 seconds at 500² to 4.24 seconds at 1000² is intentional: grids above 250,000 cells switch from exhaustive template translation to the sampled-anchor strategy described in Section 3.3. Consequently, timings on opposite sides of that threshold measure two algorithmic regimes.
+
+Third, fleet size affects the combinatorial master more strongly than raster size because the restricted library remains near 5,000 routes. One-drone selection is effectively an `argmax` and takes less than 0.1 seconds after route generation for grids of 50² and larger. Four- and eight-drone scenarios generally take 12–20 seconds under the capped benchmark. The 1000² cases finish cold in approximately 24 seconds, demonstrating practical million-cell planning, but their four- and eight-drone statuses are `UNKNOWN; greedy fallback`: preprocessing and search exhausted the per-call limits before CP-SAT returned an incumbent. Those routes are validated feasible solutions, not restricted-master optima. They achieve 90.72% and 89.11% of the deliberately optimistic global relaxation, respectively. A longer time limit or a smaller candidate library is appropriate when certificates matter more than rapid response.
+
+Observed resident memory after individual cases stayed below approximately 304 MiB, but this is a post-stage resident-set reading rather than a rigorously sampled peak. The 4-core machine ran CP-SAT with eight requested workers, so the solver was oversubscribed; the timing results should not be generalized to other hardware without rerunning the included benchmark."""
+    )
+)
+
+cells.append(
+    nbf.v4.new_markdown_cell(
+        """## 5. Exact validation on a small instance
 
 The next experiment solves a 6 × 6, two-drone, five-cell instance twice: once with the full time-indexed model and once with the scalable method. It also includes a sequential endpoint-greedy baseline in the spirit of the original post. The exact solver's status and bound provide a genuine certificate."""
     )
@@ -342,7 +451,7 @@ cells.append(
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        """## 5. Full-scale plans for different fleet sizes and budgets
+        """## 6. Full-scale plans for different fleet sizes and budgets
 
 We now return to all 10,000 cells. Candidate routes only depend on path length, so the same library can be reused across fleet sizes. This is operationally convenient: once routes are generated, incident command can rapidly evaluate how the allocation changes as drones become available."""
     )
@@ -422,7 +531,7 @@ plt.show()"""
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""## 6. A second search round after no detection
+        r"""## 7. A second search round after no detection
 
 Suppose four drones complete the 100-cell routes from round 1 but do not find the target. Let $p_i^{(r)}$ denote the probability at the start of round $r$, $s_i^{(r)}$ the number of successful scans assigned to cell $i$ during that round, and $q_i$ the probability of detecting the target in one scan conditional on its presence. Under conditionally independent detection attempts, the likelihood of no detection in cell $i$ is
 
@@ -555,7 +664,7 @@ cells.append(
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""## 7. Interpretation
+        r"""## 8. Interpretation
 
 The routes make the allocation trade-off explicit. A single drone concentrates on one high-value connected region because reaching another mode would spend budget on lower-probability bridge cells. With more drones, free deployment allows separate modes to be searched without paying that bridge cost. Longer routes widen each local sweep and eventually make secondary modes worthwhile. This is the behavior the original greedy experiment was trying to elicit, but here all drones are coordinated in one master optimization.
 
@@ -567,7 +676,7 @@ There is no universal polynomial-time “best” solver for arbitrary maps becau
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""## 8. Reuse and extensions
+        r"""## 9. Reuse and extensions
 
 The functions in `search_planner.py` accept any nonnegative 2-D array after normalization. The clean extension points are:
 
