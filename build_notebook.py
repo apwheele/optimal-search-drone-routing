@@ -22,9 +22,9 @@ cells.append(
 
 **Objective.** We study the allocation of multiple search drones over a raster-valued posterior probability surface when each drone has a fixed scan budget and must follow a contiguous path. The objective is to maximize the probability mass searched without duplicate coverage.
 
-**Methods.** The problem is formulated as a free-origin, free-destination grid variant of the Team Orienteering Problem. A time-indexed binary program provides exact solutions and feasibility certificates on small instances. For operational-scale rasters, we develop a path-based matheuristic comprising serpentine sweep generation, bidirectional beam construction, an exact CP-SAT set-packing master, and incumbent-centered translation enrichment. A cell-order-statistic relaxation supplies a valid global upper bound. Negative search outcomes are incorporated through sequential Bayesian updating.
+**Methods.** The problem is formulated as a free-origin, free-destination grid variant of the Team Orienteering Problem. A time-indexed binary program provides exact solutions and feasibility certificates on small instances. For operational-scale rasters, we develop a path-based matheuristic comprising serpentine sweep generation, bidirectional beam construction, an exact CP-SAT set-packing master, and incumbent-centered translation enrichment. Optional local-topology constraints prevent isolated unsearched cells. A cell-order-statistic relaxation supplies a valid global upper bound. Negative search outcomes are incorporated through sequential Bayesian updating.
 
-**Results.** On the 100 × 100 multimodal surface introduced by Wheeler, the refined four-drone, 100-cell plan searches 8.036% of prior probability and attains 99.48% of the unconstrained top-400-cell upper bound. Four 300-cell routes search 21.70% of prior probability. In a two-round four-drone example, a negative first search sets 400 cells to zero posterior probability; replanning raises cumulative detection probability from 8.04% after round 1 to 15.21% after round 2. The scalable method is also compared with a globally optimal solution on a small instance.
+**Results.** On the 100 × 100 multimodal surface introduced by Wheeler, the refined four-drone, 100-cell plan searches 8.036% of prior probability and attains 99.48% of the unconstrained top-400-cell upper bound. Four 300-cell routes search 21.70% of prior probability. In a two-round four-drone example, a negative first search sets 400 cells to zero posterior probability; hole-free replanning raises cumulative detection probability from 8.04% after round 1 to 15.08% after round 2. The scalable method is also compared with a globally optimal solution on a small instance.
 
 **Conclusions.** Explicit route ordering eliminates the disconnected-subtour defect of cell-selection formulations. The proposed decomposition produces valid, coordinated paths and quantifies solution quality without claiming global optimality when the full path space has not been enumerated.
 
@@ -50,6 +50,7 @@ import pandas as pd
 from search_planner import (
     generate_candidates,
     greedy_endpoint_plan,
+    isolated_uncovered_cells,
     make_probability_surface,
     path_score,
     plan_from_candidates,
@@ -561,17 +562,49 @@ This update assumes the drones **completed** their searches and failed to detect
 )
 
 cells.append(
+    nbf.v4.new_markdown_cell(
+        r"""### 7.1 Avoiding isolated unsearched cells
+
+Pure probability maximization can select a route that surrounds a low-valued cell without scanning it. Such a one-cell pocket is visually awkward and may be operationally undesirable even though the route is mathematically valid. Let
+
+$$z_i=\sum_{\omega\ni i}x_\omega$$
+
+indicate whether cell $i$ is searched by any selected route, and let $N_4(i)$ contain its north, south, east, and west neighbors. For every nonboundary cell, the optional no-isolated-hole policy adds
+
+$$\sum_{j\in N_4(i)}z_j-4z_i\leq 3. \tag{17}$$
+
+If $z_i=0$, (17) requires at least one orthogonal neighbor to remain unsearched, so cell $i$ cannot be a one-cell enclosed pocket. If $z_i=1$, the constraint is inactive. Candidate generation first removes routes that create such a hole individually; coverage variables in the restricted master also prevent a hole created jointly by multiple routes. This is a precise local compactness rule, not a ban on every larger enclosed region. General component-level exclusions would require connectivity cuts or iterative flood-fill separation."""
+    )
+)
+
+cells.append(
     nbf.v4.new_code_cell(
         """round1 = plans[(4, 100)]
 round2_probability = update_probability_after_no_detection(
     probability, round1.paths, detection_probability=1.0
 )
 round1_cells = set(node for path in round1.paths for node in path)
+round1_holes = isolated_uncovered_cells(round1.paths, probability.shape)
 
 assert np.isclose(round2_probability.sum(), 1.0)
 assert np.all(round2_probability.ravel()[list(round1_cells)] == 0.0)
 
-round2_candidates = generate_candidates(round2_probability, length=100)
+round2_candidates_unconstrained = generate_candidates(round2_probability, length=100)
+round2_unconstrained = plan_from_candidates(
+    round2_probability,
+    round2_candidates_unconstrained,
+    drones=4,
+    length=100,
+    time_limit=12,
+    random_seed=3026,
+)
+unconstrained_holes = isolated_uncovered_cells(
+    round2_unconstrained.paths, round2_probability.shape
+)
+
+round2_candidates = generate_candidates(
+    round2_probability, length=100, forbid_isolated_holes=True
+)
 round2 = plan_from_candidates(
     round2_probability,
     round2_candidates,
@@ -579,8 +612,11 @@ round2 = plan_from_candidates(
     length=100,
     time_limit=12,
     random_seed=3026,
+    forbid_isolated_holes=True,
 )
 validate_paths(round2.paths, round2_probability.shape, expected_length=100)
+round2_holes = isolated_uncovered_cells(round2.paths, round2_probability.shape)
+assert not round2_holes
 round2_cells = set(node for path in round2.paths for node in path)
 repeat_steps = len(round1_cells & round2_cells)
 
@@ -597,6 +633,7 @@ sequential_results = pd.DataFrame(
             "conditional_find_probability": round1_find,
             "unconditional_probability_increment": round1_find,
             "cumulative_find_probability": round1_find,
+            "isolated_uncovered_cells": len(round1_holes),
         },
         {
             "round": 2,
@@ -604,6 +641,7 @@ sequential_results = pd.DataFrame(
             "conditional_find_probability": round2_find_given_failure,
             "unconditional_probability_increment": round2_unconditional_increment,
             "cumulative_find_probability": cumulative_find,
+            "isolated_uncovered_cells": len(round2_holes),
         },
     ]
 )
@@ -618,6 +656,24 @@ display(
 )
 print(f"Round-1 cells assigned zero posterior probability: {len(round1_cells)}")
 print(f"Round-2 steps through zero-probability round-1 cells: {repeat_steps}")
+round2_policy_comparison = pd.DataFrame(
+    [
+        {
+            "policy": "probability only",
+            "conditional_find_probability": round2_unconstrained.score,
+            "isolated_uncovered_cells": len(unconstrained_holes),
+            "status": round2_unconstrained.status,
+        },
+        {
+            "policy": "forbid isolated holes",
+            "conditional_find_probability": round2.score,
+            "isolated_uncovered_cells": len(round2_holes),
+            "status": round2.status,
+        },
+    ]
+)
+display(round2_policy_comparison.style.format({"conditional_find_probability": "{:.2%}"}))
+round2_policy_comparison.to_csv(OUTPUT / "round2_hole_policy.csv", index=False)
 sequential_results.to_csv(OUTPUT / "sequential_round_results.csv", index=False)"""
     )
 )
@@ -647,7 +703,7 @@ plot_paths(
     round2_probability,
     round2.paths,
     axes[2],
-    f"Round 2: search {round2_find_given_failure:.1%} of posterior",
+    f"Round 2, no isolated holes: search {round2_find_given_failure:.1%}",
 )
 axes[2].scatter(old_x, old_y, s=7, marker="s", color="lightgray", alpha=0.55,
                 linewidth=0, zorder=1.5)
@@ -658,7 +714,7 @@ plt.show()"""
 
 cells.append(
     nbf.v4.new_markdown_cell(
-        r"""The second-round optimizer uses exactly the same code as the first. Zero-valued cells are legal transit cells but contribute nothing to the objective. In this example the reported overlap count shows whether any such transit was useful. Conditional and cumulative probabilities are kept separate: round 2's objective is conditional on the round-1 failure, while its unconditional contribution is multiplied by the probability of reaching round 2."""
+        r"""The unconstrained second-round plan enclosed four individual cells. Enforcing (17) removes all four at a cost of approximately 0.15 percentage points of conditional detection probability (7.81% to 7.66%). The plotted plan is the constrained solution. Zero-valued cells remain legal transit cells but contribute nothing to the objective. Conditional and cumulative probabilities are kept separate: round 2's objective is conditional on the round-1 failure, while its unconditional contribution is multiplied by the probability of reaching round 2."""
     )
 )
 

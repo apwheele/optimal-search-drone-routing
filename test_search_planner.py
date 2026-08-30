@@ -3,6 +3,7 @@ import numpy as np
 from search_planner import (
     Candidate,
     generate_candidates,
+    isolated_uncovered_cells,
     make_probability_surface,
     path_score,
     plan_from_candidates,
@@ -79,3 +80,37 @@ def test_cell_ids_do_not_overflow_int16_boundary():
     assert max(all_nodes) > np.iinfo(np.int16).max
     assert min(all_nodes) >= 0
     assert max(all_nodes) < probability.size
+
+
+def test_isolated_uncovered_cells_detects_only_enclosed_singletons():
+    ring = [[1, 3, 5, 7]]
+    assert isolated_uncovered_cells(ring, (3, 3)) == [4]
+    assert isolated_uncovered_cells([[1, 3, 7]], (3, 3)) == []
+
+
+def test_master_can_forbid_isolated_uncovered_cells():
+    probability = np.full((6, 6), 0.001)
+    ring = (1, 2, 8, 14, 13, 12, 6, 0)
+    compact = (1, 2, 3, 9, 8, 7, 6, 0)
+    second = (22, 23, 29, 28, 27, 26, 32, 33)
+    probability.ravel()[list(ring)] = 0.04
+    probability.ravel()[[3, 9, 7]] = 0.02
+    probability.ravel()[list(second)] = 0.03
+    probability /= probability.sum()
+    candidates = [
+        Candidate(path=ring, score=float(probability.ravel()[list(ring)].sum()), source="ring"),
+        Candidate(path=compact, score=float(probability.ravel()[list(compact)].sum()), source="compact"),
+        Candidate(path=second, score=float(probability.ravel()[list(second)].sum()), source="second"),
+    ]
+    result = plan_from_candidates(
+        probability,
+        candidates,
+        drones=2,
+        length=8,
+        refinement_rounds=0,
+        forbid_isolated_holes=True,
+    )
+    assert list(ring) not in result.paths
+    assert list(compact) in result.paths
+    assert list(second) in result.paths
+    assert isolated_uncovered_cells(result.paths, probability.shape) == []

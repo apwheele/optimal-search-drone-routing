@@ -162,6 +162,39 @@ def validate_paths(
         raise ValueError("two drones receive credit for the same cell")
 
 
+def isolated_uncovered_cells(
+    paths: Sequence[Sequence[int]], shape: tuple[int, int]
+) -> list[int]:
+    """Return unsearched interior cells enclosed by four searched neighbors.
+
+    The definition uses orthogonal neighbors: a cell is an isolated one-cell
+    hole when its north, south, east, and west neighbors are all searched.
+    Boundary cells cannot be enclosed and are therefore never returned.
+    """
+
+    rows, cols = shape
+    covered = {int(node) for path in paths for node in path}
+    possible: set[int] = set()
+    for node in covered:
+        row, col = divmod(node, cols)
+        if row > 0:
+            possible.add(node - cols)
+        if row + 1 < rows:
+            possible.add(node + cols)
+        if col > 0:
+            possible.add(node - 1)
+        if col + 1 < cols:
+            possible.add(node + 1)
+    holes: list[int] = []
+    for node in possible - covered:
+        row, col = divmod(node, cols)
+        if 0 < row < rows - 1 and 0 < col < cols - 1:
+            neighbors = (node - cols, node + cols, node - 1, node + 1)
+            if all(neighbor in covered for neighbor in neighbors):
+                holes.append(node)
+    return sorted(holes)
+
+
 def _canonical(path: Sequence[int]) -> tuple[int, ...]:
     route = tuple(int(node) for node in path)
     reverse = route[::-1]
@@ -397,8 +430,18 @@ def _beam_candidates(
     return list(completed.values())
 
 
-def generate_candidates(probability: np.ndarray, length: int) -> list[Candidate]:
-    """Generate a diverse library of valid fixed-length routes."""
+def generate_candidates(
+    probability: np.ndarray,
+    length: int,
+    forbid_isolated_holes: bool = False,
+) -> list[Candidate]:
+    """Generate a diverse library of valid fixed-length routes.
+
+    When ``forbid_isolated_holes`` is true, discard any single route whose
+    footprint surrounds an unsearched cell on all four orthogonal sides.
+    ``plan_from_candidates`` can additionally prevent holes formed jointly by
+    several otherwise hole-free routes.
+    """
 
     if not 1 <= length <= probability.size:
         raise ValueError("length must be between 1 and the number of cells")
@@ -410,16 +453,34 @@ def generate_candidates(probability: np.ndarray, length: int) -> list[Candidate]
         if key not in unique or candidate.score > unique[key].score:
             unique[key] = candidate
     result = sorted(unique.values(), key=lambda candidate: candidate.score, reverse=True)
+    if forbid_isolated_holes:
+        result = [
+            candidate
+            for candidate in result
+            if not isolated_uncovered_cells([candidate.path], probability.shape)
+        ]
     for candidate in result:
         validate_paths([candidate.path], probability.shape, length)
     return result
 
 
-def _candidate_greedy(candidates: Sequence[Candidate], drones: int) -> list[int]:
+def _candidate_greedy(
+    candidates: Sequence[Candidate],
+    drones: int,
+    shape: tuple[int, int] | None = None,
+    forbid_isolated_holes: bool = False,
+) -> list[int]:
     selected: list[int] = []
     used: set[int] = set()
     for index, candidate in enumerate(candidates):
         if used.isdisjoint(candidate.path):
+            if forbid_isolated_holes:
+                if shape is None:
+                    raise ValueError("shape is required when isolated holes are forbidden")
+                proposed_paths = [candidates[chosen].path for chosen in selected]
+                proposed_paths.append(candidate.path)
+                if isolated_uncovered_cells(proposed_paths, shape):
+                    continue
             selected.append(index)
             used.update(candidate.path)
             if len(selected) == drones:
@@ -470,15 +531,25 @@ def _translated_candidates(
 
 def _solve_candidate_master(
     candidates: Sequence[Candidate],
-    cell_count: int,
+    shape: tuple[int, int],
     drones: int,
     time_limit: float,
     random_seed: int,
+    forbid_isolated_holes: bool,
 ) -> tuple[list[int], str, float]:
     """Solve one set-packing master and return indices, status, and bound."""
 
     if drones == 1:
-        return [0], "OPTIMAL", candidates[0].score
+        eligible = [
+            index
+            for index, candidate in enumerate(candidates)
+            if not forbid_isolated_holes
+            or not isolated_uncovered_cells([candidate.path], shape)
+        ]
+        if not eligible:
+            raise RuntimeError("candidate library contains no hole-free route")
+        selected = max(eligible, key=lambda index: candidates[index].score)
+        return [selected], "OPTIMAL", candidates[selected].score
 
     model = cp_model.CpModel()
     choose = [model.new_bool_var(f"route_{index}") for index in range(len(candidates))]
@@ -490,10 +561,31 @@ def _solve_candidate_master(
     for covering in by_cell.values():
         if len(covering) > 1:
             model.add(sum(choose[index] for index in covering) <= 1)
+    if forbid_isolated_holes:
+        rows, cols = shape
+        covered: dict[int, cp_model.IntVar] = {}
+        for node, covering in by_cell.items():
+            variable = model.new_bool_var(f"covered_{node}")
+            model.add(variable == sum(choose[index] for index in covering))
+            covered[node] = variable
+        for row in range(1, rows - 1):
+            for col in range(1, cols - 1):
+                node = row * cols + col
+                neighbors = (node - cols, node + cols, node - 1, node + 1)
+                # If any neighbor can never be covered by the library, this
+                # cell cannot become an isolated hole.
+                if all(neighbor in covered for neighbor in neighbors):
+                    model.add(
+                        sum(covered[neighbor] for neighbor in neighbors)
+                        - 4 * covered.get(node, 0)
+                        <= 3
+                    )
     scale = 10**12
     rewards = [int(round(candidate.score * scale)) for candidate in candidates]
     model.maximize(sum(reward * variable for reward, variable in zip(rewards, choose)))
-    greedy_hint = set(_candidate_greedy(candidates, drones))
+    greedy_hint = set(
+        _candidate_greedy(candidates, drones, shape, forbid_isolated_holes)
+    )
     if len(greedy_hint) == drones:
         for index, variable in enumerate(choose):
             model.add_hint(variable, int(index in greedy_hint))
@@ -521,12 +613,15 @@ def plan_from_candidates(
     random_seed: int = 2026,
     refinement_rounds: int = 3,
     translation_radius: int = 3,
+    forbid_isolated_holes: bool = False,
 ) -> PlanResult:
     """Select disjoint routes and iteratively enrich around the incumbent.
 
     ``time_limit`` applies to each candidate-master solve.  The returned bound
     and status apply only to the final enriched route library, not to all
-    mathematically possible grid paths.
+    mathematically possible grid paths.  ``forbid_isolated_holes`` adds local
+    coverage constraints that prevent an unsearched interior cell from having
+    all four orthogonal neighbors searched.
     """
 
     if drones * length > probability.size:
@@ -535,7 +630,12 @@ def plan_from_candidates(
     working = list(candidates)
     known = {_canonical(candidate.path) for candidate in working}
     selected, raw_status, candidate_bound = _solve_candidate_master(
-        working, probability.size, drones, time_limit, random_seed
+        working,
+        probability.shape,
+        drones,
+        time_limit,
+        random_seed,
+        forbid_isolated_holes,
     )
     for refinement in range(refinement_rounds):
         incumbent_paths = [working[index].path for index in selected]
@@ -551,13 +651,16 @@ def plan_from_candidates(
         working.sort(key=lambda candidate: candidate.score, reverse=True)
         selected, raw_status, candidate_bound = _solve_candidate_master(
             working,
-            probability.size,
+            probability.shape,
             drones,
             time_limit,
             random_seed + refinement + 1,
+            forbid_isolated_holes,
         )
     paths = [list(working[index].path) for index in selected]
     validate_paths(paths, probability.shape, length)
+    if forbid_isolated_holes and isolated_uncovered_cells(paths, probability.shape):
+        raise RuntimeError("solver returned a plan containing an isolated uncovered cell")
     score = path_score(probability, paths)
     global_bound = float(np.sort(probability.ravel())[-drones * length :].sum())
     candidate_gap = (
