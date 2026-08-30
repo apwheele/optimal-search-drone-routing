@@ -45,6 +45,35 @@ The motivation is wilderness search and rescue, but the same machinery applies t
 )
 
 cells.append(
+    nbf.v4.new_markdown_cell(
+        r"""## Algorithm at a glance
+
+In plain language, the algorithm does two things: it first constructs many sensible routes for one drone, and then it chooses the combination of routes that works best for the whole fleet.
+
+**Inputs.** The planner needs (i) a grid whose cell values sum to one, (ii) the number of available drones $k$, and (iii) the number of cells each drone can search, $L$. A legal route visits exactly $L$ different cells and moves only to an edge- or corner-adjacent cell. Different drones may start anywhere, but they cannot search the same cell in the same round.
+
+The operational-scale algorithm follows these steps:
+
+1. **Build plausible single-drone routes.** Place compact back-and-forth sweep patterns over promising parts of the map. Also grow paths outward from high-probability starting cells, retaining only the strongest partial paths at each step.
+2. **Score every route.** A route's score is the sum of the probabilities of its cells. At this point routes are evaluated individually; they may still overlap one another.
+3. **Coordinate the fleet.** Give the route library to CP-SAT. It selects exactly $k$ routes with the largest combined score subject to no shared cells.
+4. **Improve how the routes fit together.** Shift the selected routes a few rows or columns in every direction, add those nearby alternatives to the library, and let CP-SAT select again. Repeating this step closes packing gaps that are invisible when routes are ranked one at a time.
+5. **Validate the answer independently.** Check every path's length, cell indices, adjacency, lack of revisits, and lack of overlap with other drones. Recompute its probability directly from the raster.
+6. **Replan after an unsuccessful search.** Reduce or zero the probability of cells that were searched, renormalize the posterior surface, and run the same route-generation and fleet-selection process again. Optional compactness constraints prevent isolated one-cell gaps.
+
+The data flow is therefore
+
+```text
+probability map → candidate routes → CP-SAT fleet selection
+        ↑                         ↓
+Bayesian update ← validated plan ← local route refinement
+```
+
+The method is a **matheuristic**: route generation searches a carefully chosen subset of all possible paths, while CP-SAT finds the exact best combination inside that generated subset. Consequently, an `OPTIMAL` solver status certifies the best plan in the current route library, not necessarily the unknowable best plan among every possible grid path. Later sections define each step mathematically, validate it on a small exact instance, and report practical performance at larger scales."""
+    )
+)
+
+cells.append(
     nbf.v4.new_code_cell(
         """from pathlib import Path
 import matplotlib.pyplot as plt
@@ -112,7 +141,25 @@ $$p_i\geq 0, \qquad \sum_{i\in V}p_i=1.$$
 
 A route for drone $d$ is an injective map $r_d:T\rightarrow V$ such that $(r_d(t-1),r_d(t))\in A$ for every $t=2,\ldots,L$. Thus, a route is an ordered elementary path, not merely a connected subset of cells. The team plan is $R=(r_1,\ldots,r_k)$, subject to vertex disjointness across drones. Write
 
-<table>
+<style>
+.jp-RenderedHTMLCommon table.symbol-definition-table {
+  table-layout: auto !important;
+  width: 52rem !important;
+  max-width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: auto !important;
+}
+.jp-RenderedHTMLCommon table.symbol-definition-table th,
+.jp-RenderedHTMLCommon table.symbol-definition-table td {
+  text-align: left !important;
+}
+.jp-RenderedHTMLCommon table.symbol-definition-table th:first-child,
+.jp-RenderedHTMLCommon table.symbol-definition-table td:first-child {
+  width: 12rem;
+  white-space: nowrap;
+}
+</style>
+<table class="symbol-definition-table">
 <thead><tr><th>Symbol</th><th>Definition</th></tr></thead>
 <tbody>
 <tr><td>\(G=(V,A)\)</td><td>Directed queen-adjacency grid graph</td></tr>
